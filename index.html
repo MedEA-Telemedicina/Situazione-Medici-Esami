@@ -1,3 +1,4 @@
+
 <!doctype html>
 <html data-theme="alfred-light">
   <head>
@@ -408,6 +409,7 @@ body {
     window._anyCountFocused  = false;
     window._lastCountBlur    = 0;
     window._pendingRealtimeSnap = {};
+    window._lastSavedUpdatedAt = null; // FIX race-condition: timestamp ultimo salvataggio locale
 
     document.addEventListener('focusin', function(e) {
       if (e.target && e.target.classList &&
@@ -432,6 +434,8 @@ body {
               var snaps = window._pendingRealtimeSnap || {};
               window._pendingRealtimeSnap = {};
               Object.values(snaps).forEach(function(s) {
+                // FIX: scarta snapshot remoti più vecchi dell'ultimo salvataggio locale
+                if (s.dataUpdatedAt && window._lastSavedUpdatedAt && s.dataUpdatedAt <= window._lastSavedUpdatedAt) return;
                 try { s.onNext(s.doc); } catch(err2) {}
               });
             }, 900);
@@ -548,7 +552,8 @@ body {
                         window._pendingRealtimeSnap = window._pendingRealtimeSnap || {};
                         window._pendingRealtimeSnap[_sk] = {
                           onNext: onNext,
-                          doc: _makeDoc(tgt, p.new || null)
+                          doc: _makeDoc(tgt, p.new || null),
+                          dataUpdatedAt: p.new && p.new.updated_at ? p.new.updated_at : null // FIX
                         };
                         return;
                       }
@@ -711,7 +716,7 @@ body {
       } catch(e) { console.error('Supabase saveCardiologists error:', e); throw e; }
     };
 
-    window._fbSaveHolterCounts = function(weekKey, hc, hp, spiro, pls, notes, ecgTimes, extraHc, extraHp, extraSp, extraPl) {
+    window._fbSaveHolterCounts = function(weekKey, hc, hp, spiro, pls, notes, ecgTimes, extraHc, extraHp, extraSp, extraPl, dispOverrides) {
       var now = Date.now();
       if (window._lastFbSave && now - window._lastFbSave < 800) {
         clearTimeout(window._fbSaveRetry);
@@ -722,7 +727,7 @@ body {
         // realtime di Supabase sovrascriva il valore appena digitato dall'utente.
         return new Promise(function(resolve, reject) {
           window._fbSaveRetry = setTimeout(function() {
-            window._fbSaveHolterCounts(weekKey, hc, hp, spiro, pls, notes, ecgTimes, extraHc, extraHp, extraSp, extraPl)
+            window._fbSaveHolterCounts(weekKey, hc, hp, spiro, pls, notes, ecgTimes, extraHc, extraHp, extraSp, extraPl, dispOverrides)
               .then(resolve, reject);
           }, retryDelay);
         });
@@ -750,6 +755,7 @@ body {
               extra_hp:   Object.assign({}, ex.extra_hp  || {}, extraHp),
               extra_sp:   Object.assign({}, ex.extra_sp  || {}, extraSp),
               extra_pl:   Object.assign({}, ex.extra_pl  || {}, extraPl),
+              disp_overrides: Object.assign({}, ex.disp_overrides || {}, dispOverrides || {}),
               updated_at: newUpdatedAt
             };
             // Se la riga esiste, usa UPDATE con controllo su updated_at (lock ottimistico)
@@ -768,8 +774,10 @@ body {
                 // Dopo 3 tentativi forza la scrittura (evita stallo)
                 console.warn('Holter save: conflitto persistente, forzo la scrittura');
                 return _sb.from('holter_counts').upsert(merged)
-                  .then(function(r2) { if (r2.error) throw r2.error; });
+                  .then(function(r2) { if (r2.error) throw r2.error; window._lastSavedUpdatedAt = newUpdatedAt; }); // FIX
               }
+              // FIX: salvataggio confermato → aggiorna il timestamp per scartare snap remoti vecchi
+              window._lastSavedUpdatedAt = newUpdatedAt;
             });
           })
           .catch(function(e) { console.warn('Supabase holter save error:', e); throw e; });
@@ -917,8 +925,8 @@ body {
       }
     };
     var _origSaveCounts = window._fbSaveHolterCounts;
-    window._fbSaveHolterCounts = function(weekKey, hc, hp, spiro, pls, notes, ecgTimes, extraHc, extraHp, extraSp, extraPl) {
-      return _origSaveCounts(weekKey, hc, hp, spiro, pls, notes, ecgTimes, extraHc, extraHp, extraSp, extraPl)
+    window._fbSaveHolterCounts = function(weekKey, hc, hp, spiro, pls, notes, ecgTimes, extraHc, extraHp, extraSp, extraPl, dispOverrides) {
+      return _origSaveCounts(weekKey, hc, hp, spiro, pls, notes, ecgTimes, extraHc, extraHp, extraSp, extraPl, dispOverrides)
         .catch(function(e) {
           window._fbToast('\u274c Errore salvataggio conteggi: controlla le regole Supabase', 'error');
           throw e;
@@ -23744,6 +23752,9 @@ body {
     var _xSp = (0, import_react3.useState)({}); var extraSpDocs = _xSp[0], setExtraSpDocs = _xSp[1];
     var _xPl = (0, import_react3.useState)({}); var extraPlDocs = _xPl[0], setExtraPlDocs = _xPl[1];
     var _dn = (0, import_react3.useState)({}); var doctorNotes = _dn[0], setDoctorNotes = _dn[1];
+    var _do = (0, import_react3.useState)({}); var dispOverrides = _do[0], setDispOverrides = _do[1];
+    var _ed = (0, import_react3.useState)(null); var editingDisp = _ed[0], setEditingDisp = _ed[1];
+    var _edv = (0, import_react3.useState)(""); var editingDispVal = _edv[0], setEditingDispVal = _edv[1];
     var _nm = (0, import_react3.useState)(null); var noteModal = _nm[0], setNoteModal = _nm[1];
 
     var weekKey = getMondayOfWeekH(new Date());
@@ -23896,6 +23907,7 @@ body {
           if (_src.extraHp && !Array.isArray(_src.extraHp)) setExtraHpDocs(_src.extraHp);
           if (_src.extraSp && !Array.isArray(_src.extraSp)) setExtraSpDocs(_src.extraSp);
           if (_src.extraPl && !Array.isArray(_src.extraPl)) setExtraPlDocs(_src.extraPl);
+          if (_src.disp_overrides && typeof _src.disp_overrides === 'object') setDispOverrides(_src.disp_overrides);
         }
         setFsLoaded(true);
       }, function(err) {
@@ -23920,7 +23932,7 @@ body {
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(function() {
         var savePromise = window._fbSaveHolterCounts
-          ? window._fbSaveHolterCounts(weekKey, hcCounts, hpCounts, spiroCounts, plsCounts, doctorNotes, ecgTimes, extraHcDocs, extraHpDocs, extraSpDocs, extraPlDocs)
+          ? window._fbSaveHolterCounts(weekKey, hcCounts, hpCounts, spiroCounts, plsCounts, doctorNotes, ecgTimes, extraHcDocs, extraHpDocs, extraSpDocs, extraPlDocs, dispOverrides)
           : fsDb.collection("holter_counts").doc(weekKey).set({
               hc: hcCounts, hp: hpCounts, spiro: spiroCounts, pls: plsCounts, notes: doctorNotes, ecgTimes: ecgTimes, extraHc: extraHcDocs, extraHp: extraHpDocs, extraSp: extraSpDocs, extraPl: extraPlDocs,
               updatedAt: new Date().toISOString()
@@ -23936,7 +23948,7 @@ body {
           saveTimer.current = null;
         }).catch(function(err) { console.warn("Firestore save error:", err); ignoreSnap.current = false; saveTimer.current = null; });
       }, 300);
-    }, [hcCounts, hpCounts, spiroCounts, plsCounts, doctorNotes, ecgTimes, extraHcDocs, extraHpDocs, extraSpDocs, extraPlDocs, fsLoaded]);
+    }, [hcCounts, hpCounts, spiroCounts, plsCounts, doctorNotes, ecgTimes, extraHcDocs, extraHpDocs, extraSpDocs, extraPlDocs, dispOverrides, fsLoaded]);
 
     // Draft localStorage immediato (protezione Ctrl+F5 / chiusura tab)
     (0, import_react3.useEffect)(function() {
@@ -23945,10 +23957,10 @@ body {
         localStorage.setItem('holter_draft_' + weekKey, JSON.stringify({
           _ts: Date.now(), hc: hcCounts, hp: hpCounts, spiro: spiroCounts, pls: plsCounts,
           notes: doctorNotes, ecgTimes: ecgTimes,
-          extraHc: extraHcDocs, extraHp: extraHpDocs, extraSp: extraSpDocs, extraPl: extraPlDocs
+          extraHc: extraHcDocs, extraHp: extraHpDocs, extraSp: extraSpDocs, extraPl: extraPlDocs, disp_overrides: dispOverrides
         }));
       } catch(e) {}
-    }, [hcCounts, hpCounts, spiroCounts, plsCounts, doctorNotes, ecgTimes, extraHcDocs, extraHpDocs, extraSpDocs, extraPlDocs, fsLoaded]);
+    }, [hcCounts, hpCounts, spiroCounts, plsCounts, doctorNotes, ecgTimes, extraHcDocs, extraHpDocs, extraSpDocs, extraPlDocs, dispOverrides, fsLoaded]);
 
     // ── Salva gli orari ECG effettivi (default + override) su Supabase ────────
     // Si attiva ogni volta che cambiano i turni confermati (vercelData),
@@ -24238,22 +24250,24 @@ body {
     // ── Totali (solo valori inseriti nell'arco della giornata) ────
     var totalHC = 0, maxHC = 0;
     hcDocs.forEach(function(d) {
-      var entered = hcCounts["d" + dayIdx + "_hc_" + d.key];
+      var _hcKey = "d" + dayIdx + "_hc_" + d.key;
+      var entered = hcCounts[_hcKey];
       if (entered !== undefined && entered !== "") totalHC += parseInt(entered) || 0;
-      maxHC += parseInt(d.max) || 0;
+      maxHC += dispOverrides[_hcKey] !== undefined ? dispOverrides[_hcKey] : (parseInt(d.max) || 0);
     });
     // Add holter HC totals
     holterDocs.forEach(function(d) {
       var htKey = "d" + dayIdx + "_ht_hc_" + d.key;
       var v = hcCounts[htKey];
       if (v !== undefined && v !== "") totalHC += parseInt(v) || 0;
-      maxHC += 10;
+      maxHC += dispOverrides[htKey] !== undefined ? dispOverrides[htKey] : 10;
     });
     // Add manually added HC doctors
     extraHcDocsDay.forEach(function(d) {
-      var entered = hcCounts["d" + dayIdx + "_hcx_" + d.key];
+      var _hcxKey = "d" + dayIdx + "_hcx_" + d.key;
+      var entered = hcCounts[_hcxKey];
       if (entered !== undefined && entered !== "") totalHC += parseInt(entered) || 0;
-      maxHC += parseInt(d.max) || 0;
+      maxHC += dispOverrides[_hcxKey] !== undefined ? dispOverrides[_hcxKey] : (parseInt(d.max) || 0);
     });
     // Add turno completo (turno normale) HC totals — entrambe le sessioni (giornaliero)
     allFullShiftDocs.forEach(function(d) {
@@ -24261,27 +24275,30 @@ body {
         var tcHcKey = "d" + dayIdx + "_s" + sIdx + "_tc_" + d.key;
         var entered = hcCounts[tcHcKey];
         if (entered !== undefined && entered !== "") totalHC += parseInt(entered) || 0;
+        var _effHcMax = dispOverrides[tcHcKey] !== undefined ? dispOverrides[tcHcKey] : (d.maxHc !== null && d.maxHc !== undefined && !isNaN(parseInt(d.maxHc)) ? parseInt(d.maxHc) : null);
+        if (_effHcMax !== null) maxHC += _effHcMax;
       });
-      if (d.maxHc !== null && d.maxHc !== undefined && !isNaN(parseInt(d.maxHc))) maxHC += (parseInt(d.maxHc) || 0) * d.numSessions;
     });
     var totalHP = 0, maxHP = 0;
     hpDocs.forEach(function(d) {
-      var entered = hpCounts["d" + dayIdx + "_hp_" + d.key];
+      var _hpKey = "d" + dayIdx + "_hp_" + d.key;
+      var entered = hpCounts[_hpKey];
       if (entered !== undefined && entered !== "") totalHP += parseInt(entered) || 0;
-      maxHP += parseInt(d.max) || 0;
+      maxHP += dispOverrides[_hpKey] !== undefined ? dispOverrides[_hpKey] : (parseInt(d.max) || 0);
     });
     // Add holter HP totals
     holterDocs.forEach(function(d) {
       var htKey = "d" + dayIdx + "_ht_hp_" + d.key;
       var v = hpCounts[htKey];
       if (v !== undefined && v !== "") totalHP += parseInt(v) || 0;
-      maxHP += 10;
+      maxHP += dispOverrides[htKey] !== undefined ? dispOverrides[htKey] : 10;
     });
     // Add manually added HP doctors
     extraHpDocsDay.forEach(function(d) {
-      var entered = hpCounts["d" + dayIdx + "_hpx_" + d.key];
+      var _hpxKey = "d" + dayIdx + "_hpx_" + d.key;
+      var entered = hpCounts[_hpxKey];
       if (entered !== undefined && entered !== "") totalHP += parseInt(entered) || 0;
-      maxHP += parseInt(d.max) || 0;
+      maxHP += dispOverrides[_hpxKey] !== undefined ? dispOverrides[_hpxKey] : (parseInt(d.max) || 0);
     });
     // Add turno completo HP totals — entrambe le sessioni (giornaliero)
     allFullShiftDocs.forEach(function(d) {
@@ -24289,8 +24306,9 @@ body {
         var _tcHpKey = "d" + dayIdx + "_s" + sIdx + "_tcp_" + d.key;
         var _v = hpCounts[_tcHpKey];
         if (_v !== undefined && _v !== "") totalHP += parseInt(_v) || 0;
+        var _effHpMax = dispOverrides[_tcHpKey] !== undefined ? dispOverrides[_tcHpKey] : (d.maxHp !== null && d.maxHp !== undefined && !isNaN(parseInt(d.maxHp)) ? parseInt(d.maxHp) : null);
+        if (_effHpMax !== null) maxHP += _effHpMax;
       });
-      if (d.maxHp !== null && d.maxHp !== undefined && !isNaN(parseInt(d.maxHp))) maxHP += (parseInt(d.maxHp) || 0) * d.numSessions;
     });
 
     // ── Totali Spiro (solo inseriti) ────────────────────────────
@@ -24315,22 +24333,25 @@ body {
       }
     });
     plsDocs.forEach(function(d) {
-      var entered = plsCounts["d" + dayIdx + "_pls_" + d.key];
+      var _plsKey = "d" + dayIdx + "_pls_" + d.key;
+      var entered = plsCounts[_plsKey];
       if (entered !== undefined && entered !== "") totalPls += parseInt(entered) || 0;
-      if (d.isNumeric) maxPls += parseInt(d.max) || 0;
+      if (d.isNumeric) maxPls += dispOverrides[_plsKey] !== undefined ? dispOverrides[_plsKey] : (parseInt(d.max) || 0);
     });
     // Add manually added PLS doctors
     extraPlDocsDay.forEach(function(d) {
-      var entered = plsCounts["d" + dayIdx + "_plx_" + d.key];
+      var _plxKey = "d" + dayIdx + "_plx_" + d.key;
+      var entered = plsCounts[_plxKey];
       if (entered !== undefined && entered !== "") totalPls += parseInt(entered) || 0;
-      maxPls += parseInt(d.max) || 0;
+      maxPls += dispOverrides[_plxKey] !== undefined ? dispOverrides[_plxKey] : (parseInt(d.max) || 0);
     });
 
     // ── Helper: input cell with "su X" inline ──────────────────────
     function renderCountCell(counts, setCounts, stateKey, max, accentColor) {
       var entered = counts[stateKey];
       var hasValue = entered !== undefined && entered !== "";
-      var numMax = (max !== null && max !== undefined && !isNaN(parseInt(max))) ? parseInt(max) : null;
+      var _effMax = (dispOverrides[stateKey] !== undefined) ? dispOverrides[stateKey] : max;
+      var numMax = (_effMax !== null && _effMax !== undefined && !isNaN(parseInt(_effMax))) ? parseInt(_effMax) : null;
       var hasDotSuffix = hasValue && /^\d+\.$/.test(entered);
       var hasOverride = numMax !== null && hasValue && !hasDotSuffix && entered !== String(numMax);
       var isComplete = numMax !== null && hasValue && (parseInt(entered) === numMax || hasDotSuffix);
@@ -24355,16 +24376,46 @@ body {
               placeholder: numMax !== null ? String(numMax) : "\u2014",
               onChange: function(e) { var v = e.target.value; if (v === "" || v === "." || /^\d+$/.test(v) || /^\d+\.$/.test(v)) { setCounts(function(p) { var n = Object.assign({}, p); n[stateKey] = v; return n; }); } }
             }),
-            (0, _j)("span", {
-              style: {
-                fontSize: "9px",
-                color: entered === "." ? "#e53e3e" : (hasDotSuffix ? "#16a34a" : (hasOverride ? "rgba(0,0,0,0.35)" : "transparent")),
-                whiteSpace: "nowrap", width: "30px", textAlign: "left",
-                textDecoration: (entered === "." || hasDotSuffix) ? "line-through" : "none",
-                fontWeight: (entered === "." || hasDotSuffix) ? "700" : "400"
-              },
-              children: numMax !== null ? "su " + numMax : ""
-            }),
+            editingDisp === stateKey
+              ? (0, _j)("input", {
+                  type: "text",
+                  autoFocus: true,
+                  style: {
+                    fontSize: "9px", width: "28px", height: "18px", textAlign: "center",
+                    border: "1.5px solid #6366f1", borderRadius: "4px",
+                    outline: "none", padding: "0 2px", fontFamily: "inherit",
+                    background: "#ede9fe", color: "#4338ca", fontWeight: "700"
+                  },
+                  value: editingDispVal,
+                  onChange: function(e) { setEditingDispVal(e.target.value); },
+                  onKeyDown: function(e) {
+                    if (e.key === "Enter") {
+                      var _nv = parseInt(editingDispVal);
+                      if (!isNaN(_nv) && _nv >= 0) { setDispOverrides(function(p) { var n = Object.assign({}, p); n[stateKey] = _nv; return n; }); }
+                      else if (editingDispVal === "") { setDispOverrides(function(p) { var n = Object.assign({}, p); delete n[stateKey]; return n; }); }
+                      setEditingDisp(null);
+                    } else if (e.key === "Escape") { setEditingDisp(null); }
+                  },
+                  onBlur: function() {
+                    var _nv = parseInt(editingDispVal);
+                    if (!isNaN(_nv) && _nv >= 0) { setDispOverrides(function(p) { var n = Object.assign({}, p); n[stateKey] = _nv; return n; }); }
+                    else if (editingDispVal === "") { setDispOverrides(function(p) { var n = Object.assign({}, p); delete n[stateKey]; return n; }); }
+                    setEditingDisp(null);
+                  }
+                })
+              : (0, _j)("span", {
+                  style: {
+                    fontSize: "9px",
+                    color: entered === "." ? "#e53e3e" : (hasDotSuffix ? "#16a34a" : (hasOverride ? "rgba(0,0,0,0.35)" : "transparent")),
+                    whiteSpace: "nowrap", width: "30px", textAlign: "left",
+                    textDecoration: (entered === "." || hasDotSuffix) ? "line-through" : "none",
+                    fontWeight: (entered === "." || hasDotSuffix) ? "700" : "400",
+                    cursor: numMax !== null ? "pointer" : "default"
+                  },
+                  title: numMax !== null ? "Doppio click per modificare disponibilit\u00e0" : undefined,
+                  onDoubleClick: numMax !== null ? function(e) { e.stopPropagation(); setEditingDispVal(String(numMax)); setEditingDisp(stateKey); } : undefined,
+                  children: numMax !== null ? "su " + numMax : ""
+                }),
             hasDotSuffix ? (0, _j)("span", {
               style: { fontSize: "9px", color: "#16a34a", whiteSpace: "nowrap", textAlign: "left", fontWeight: "700", marginLeft: "2px" },
               children: "su " + parseInt(entered)
@@ -24689,8 +24740,8 @@ body {
                           if (_cM2.ssr === "SI" || (!_cM2.ssr && dExtra2.ssr)) fsBadges.push((0, _j)("span", { title: "Convenzione SSR", style: { fontSize: "9px", fontWeight: "600", color: "#6366f1", border: "1px solid rgba(99,102,241,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "SSR" }, "ssr"));
                           if (_cM2.pediatrici === "SI" || (!_cM2.pediatrici && dExtra2.pediatrico)) fsBadges.push((0, _j)("span", { title: "Pazienti Pediatrici", style: { fontSize: "9px", fontWeight: "600", color: "#ec4899", border: "1px solid rgba(236,72,153,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "\u{1F37C}" }, "ped"));
                           if (_cM2.firma === "SI" || (!_cM2.firma && dExtra2.firmaDigitale)) fsBadges.push((0, _j)("span", { title: "Firma Digitale", style: { fontSize: "9px", color: "#374151", border: "1px solid rgba(55,65,81,0.3)", borderRadius: "3px", padding: "1px 3px", marginLeft: "2px", display: "inline-flex", alignItems: "center" }, children: (0, _js)("svg", { width: "9", height: "9", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round", children: [(0, _j)("path", { d: "M12 20h9" }, "pa"), (0, _j)("path", { d: "M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" }, "pb")] }) }, "firma"));
-                          var numHcMax = (d.maxHc !== null && d.maxHc !== undefined && !isNaN(parseInt(d.maxHc))) ? parseInt(d.maxHc) : null;
-                          var numHpMax = (d.maxHp !== null && d.maxHp !== undefined && !isNaN(parseInt(d.maxHp))) ? parseInt(d.maxHp) : null;
+                          var numHcMax = dispOverrides[tcHcKey] !== undefined ? dispOverrides[tcHcKey] : ((d.maxHc !== null && d.maxHc !== undefined && !isNaN(parseInt(d.maxHc))) ? parseInt(d.maxHc) : null);
+                          var numHpMax = dispOverrides[tcHpKey] !== undefined ? dispOverrides[tcHpKey] : ((d.maxHp !== null && d.maxHp !== undefined && !isNaN(parseInt(d.maxHp))) ? parseInt(d.maxHp) : null);
                           var enteredHc = hcCounts[tcHcKey];
                           var enteredHp = hpCounts[tcHpKey];
                           var tcPlsKey = "d" + dayIdx + "_s" + sessionIdx + "_tcp_pls_" + d.key;
@@ -24699,7 +24750,7 @@ body {
                           var hcComplete = numHcMax !== null && enteredHc !== undefined && enteredHc !== "" && (parseInt(enteredHc) === numHcMax || hcDotSuffix);
                           var hpDotSuffix = enteredHp !== undefined && /^\d+\.$/.test(enteredHp);
                           var hpComplete = numHpMax !== null && enteredHp !== undefined && enteredHp !== "" && (parseInt(enteredHp) === numHpMax || hpDotSuffix);
-                          var numPlsMax = (d.maxPls !== null && d.maxPls !== undefined && !isNaN(parseInt(d.maxPls))) ? parseInt(d.maxPls) : null;
+                          var numPlsMax = dispOverrides[tcPlsKey] !== undefined ? dispOverrides[tcPlsKey] : ((d.maxPls !== null && d.maxPls !== undefined && !isNaN(parseInt(d.maxPls))) ? parseInt(d.maxPls) : null);
                           var plsDotSuffix = enteredPls !== undefined && /^\d+\.$/.test(enteredPls);
                           var plsComplete = numPlsMax !== null && enteredPls !== undefined && enteredPls !== "" && (parseInt(enteredPls) === numPlsMax || plsDotSuffix);
                           var rowComplete = d.maxPls ? (hcComplete && (d.soloHc || hpComplete) && plsComplete) : (hcComplete && (d.soloHc || hpComplete)); var nameGreen = rowComplete || (d.maxHc === "con." && d.maxHp === "con." && enteredHc !== undefined && enteredHc !== "" && enteredHp !== undefined && enteredHp !== "" && parseInt(enteredHc) >= 5 && parseInt(enteredHp) >= 5);
@@ -24713,7 +24764,7 @@ body {
                               if (!d.maxPls) return [{ content: "" }, { content: "" }];
                               var tcPlsKey = "d" + dayIdx + "_s" + sessionIdx + "_tcp_pls_" + d.key;
                               var enteredPls = plsCounts[tcPlsKey];
-                              var numPlsMax = parseInt(d.maxPls);
+                              var _rawPlsMax = parseInt(d.maxPls); var numPlsMax = !isNaN(_rawPlsMax) && dispOverrides[tcPlsKey] !== undefined ? dispOverrides[tcPlsKey] : _rawPlsMax;
                               var plsDotSuffixInner = enteredPls !== undefined && /^\d+\.$/.test(enteredPls); var plsComplete = !isNaN(numPlsMax) && enteredPls !== undefined && enteredPls !== "" && (parseInt(enteredPls) === numPlsMax || plsDotSuffixInner);
                               return [
                                 { content: (0, _j)("input", { type: "text", style: { width: "32px", height: "22px", textAlign: "center", fontSize: "11px", border: plsComplete ? "1px solid rgba(56,161,105,0.5)" : (enteredPls === "." ? "1px solid rgba(124,58,237,0.4)" : "1px solid rgba(0,0,0,0.12)"), borderRadius: "4px", outline: "none", background: plsComplete ? "rgba(56,161,105,0.12)" : (enteredPls === "." ? "rgba(124,58,237,0.06)" : "transparent"), color: plsComplete ? "#16a34a" : "#374151", fontWeight: plsComplete ? "700" : "400" }, value: enteredPls !== undefined ? enteredPls : "", placeholder: "", onChange: function(e) { var v = e.target.value; if (v === "" || v === "." || /^\d+$/.test(v) || /^\d+\.$/.test(v)) { var k = tcPlsKey; setPlsCounts(function(p) { var n = Object.assign({}, p); n[k] = v; return n; }); } } }) },
@@ -24863,7 +24914,7 @@ body {
                     var key = "d" + dayIdx + "_hc_" + d.key;
                     var entered = hcCounts[key];
                     var hasDotSuffix = entered !== undefined && /^\d+\./.test(entered);
-                    var isComplete = entered !== undefined && entered !== "" && (parseInt(entered) === parseInt(d.max) || hasDotSuffix);
+                    var _rowEffMax = dispOverrides[key] !== undefined ? dispOverrides[key] : parseInt(d.max); var isComplete = entered !== undefined && entered !== "" && (parseInt(entered) === _rowEffMax || hasDotSuffix);
                     var dExtraX = (vercelData.doctorExtra || {})[d.key] || {};
                     var _cMX = _matchCardiologo(d.key, cardiologi) || {};
                     var dTypeX = (vercelData.doctorTypes || {})[d.key] || "";
@@ -24884,7 +24935,7 @@ body {
                     var key = "d" + dayIdx + "_hcx_" + d.key;
                     var entered = hcCounts[key];
                     var hasDotSuffix = entered !== undefined && /^\d+\./.test(entered);
-                    var isComplete = entered !== undefined && entered !== "" && d.max && (parseInt(entered) === parseInt(d.max) || hasDotSuffix);
+                    var _rowEffMaxX = dispOverrides[key] !== undefined ? dispOverrides[key] : parseInt(d.max); var isComplete = entered !== undefined && entered !== "" && d.max && (parseInt(entered) === _rowEffMaxX || hasDotSuffix);
                     return flatRow([
                       { content: (0, _js)("span", { style: { display: "inline-flex", alignItems: "center", gap: "3px" }, children: [_docTip((0, _j)("span", { style: { fontWeight: "500", fontSize: "11px", color: entered === "." ? "#e53e3e" : (hasDotSuffix ? "#38a169" : "inherit"), textDecoration: entered === "." ? "line-through" : "none" }, children: formatShortName(d.name) }), d.key, cardiologi), (0, _j)("button", { style: { fontSize: "8px", color: "#ef4444", background: "transparent", border: "none", cursor: "pointer", padding: "0 2px" }, onClick: function(){ setExtraHcDocsDay(function(p){ return p.filter(function(_,j){return j!==i;}); }); }, children: "\u2715" })] }) },
                       { content: renderCountCell(hcCounts, setHcCounts, key, d.max, "#e53e3e") }
@@ -24912,7 +24963,7 @@ body {
                     var key = "d" + dayIdx + "_hp_" + d.key;
                     var entered = hpCounts[key];
                     var hasDotSuffix = entered !== undefined && /^\d+\./.test(entered);
-                    var isComplete = entered !== undefined && entered !== "" && (parseInt(entered) === parseInt(d.max) || hasDotSuffix);
+                    var _rowEffMax = dispOverrides[key] !== undefined ? dispOverrides[key] : parseInt(d.max); var isComplete = entered !== undefined && entered !== "" && (parseInt(entered) === _rowEffMax || hasDotSuffix);
                     var dExtraX = (vercelData.doctorExtra || {})[d.key] || {};
                     var _cMX = _matchCardiologo(d.key, cardiologi) || {};
                     var dTypeX = (vercelData.doctorTypes || {})[d.key] || "";
@@ -24933,7 +24984,7 @@ body {
                     var key = "d" + dayIdx + "_hpx_" + d.key;
                     var entered = hpCounts[key];
                     var hasDotSuffix = entered !== undefined && /^\d+\./.test(entered);
-                    var isComplete = entered !== undefined && entered !== "" && d.max && (parseInt(entered) === parseInt(d.max) || hasDotSuffix);
+                    var _rowEffMaxX = dispOverrides[key] !== undefined ? dispOverrides[key] : parseInt(d.max); var isComplete = entered !== undefined && entered !== "" && d.max && (parseInt(entered) === _rowEffMaxX || hasDotSuffix);
                     return flatRow([
                       { content: (0, _js)("span", { style: { display: "inline-flex", alignItems: "center", gap: "3px" }, children: [_docTip((0, _j)("span", { style: { fontWeight: "500", fontSize: "11px", color: entered === "." ? "#e53e3e" : (hasDotSuffix ? "#38a169" : "inherit"), textDecoration: entered === "." ? "line-through" : "none" }, children: formatShortName(d.name) }), d.key, cardiologi), (0, _j)("button", { style: { fontSize: "8px", color: "#ef4444", background: "transparent", border: "none", cursor: "pointer", padding: "0 2px" }, onClick: function(){ setExtraHpDocsDay(function(p){ return p.filter(function(_,j){return j!==i;}); }); }, children: "\u2715" })] }) },
                       { content: renderCountCell(hpCounts, setHpCounts, key, d.max, "#38a169") }
@@ -24962,7 +25013,7 @@ body {
                     var spMax = d.isNumeric ? d.max : null;
                     var entered = spiroCounts[key];
                     var hasDotSuffix = entered !== undefined && /^\d+\./.test(entered);
-                    var isComplete = spMax !== null && entered !== undefined && entered !== "" && (parseInt(entered) === parseInt(spMax) || hasDotSuffix);
+                    var _rowEffSpMax = dispOverrides[key] !== undefined ? dispOverrides[key] : (spMax !== null ? parseInt(spMax) : null); var isComplete = _rowEffSpMax !== null && entered !== undefined && entered !== "" && (parseInt(entered) === _rowEffSpMax || hasDotSuffix);
                     var dExtraX = (vercelData.doctorExtra || {})[d.key] || {};
                     var _cMX = _matchCardiologo(d.key, cardiologi) || {};
                     var dTypeX = (vercelData.doctorTypes || {})[d.key] || "";
@@ -24983,7 +25034,7 @@ body {
                     var key = "d" + dayIdx + "_spx_" + d.key;
                     var entered = spiroCounts[key];
                     var hasDotSuffix = entered !== undefined && /^\d+\./.test(entered);
-                    var isComplete = entered !== undefined && entered !== "" && d.max && (parseInt(entered) === parseInt(d.max) || hasDotSuffix);
+                    var _rowEffMaxX = dispOverrides[key] !== undefined ? dispOverrides[key] : parseInt(d.max); var isComplete = entered !== undefined && entered !== "" && d.max && (parseInt(entered) === _rowEffMaxX || hasDotSuffix);
                     return flatRow([
                       { content: (0, _js)("span", { style: { display: "inline-flex", alignItems: "center", gap: "3px" }, children: [_docTip((0, _j)("span", { style: { fontWeight: "500", fontSize: "11px", color: entered === "." ? "#e53e3e" : (hasDotSuffix ? "#0891b2" : "inherit"), textDecoration: entered === "." ? "line-through" : "none" }, children: formatShortName(d.name) }), d.key, cardiologi), (0, _j)("button", { style: { fontSize: "8px", color: "#ef4444", background: "transparent", border: "none", cursor: "pointer", padding: "0 2px" }, onClick: function(){ setExtraSpDocsDay(function(p){ return p.filter(function(_,j){return j!==i;}); }); }, children: "\u2715" })] }) },
                       { content: renderCountCell(spiroCounts, setSpiroCounts, key, d.max, "#0891b2") }
@@ -25012,7 +25063,7 @@ body {
                     var plMax = d.isNumeric ? d.max : null;
                     var entered = plsCounts[key];
                     var hasDotSuffix = entered !== undefined && /^\d+\./.test(entered);
-                    var isComplete = plMax !== null && entered !== undefined && entered !== "" && (parseInt(entered) === parseInt(plMax) || hasDotSuffix);
+                    var _rowEffPlMax = dispOverrides[key] !== undefined ? dispOverrides[key] : (plMax !== null ? parseInt(plMax) : null); var isComplete = _rowEffPlMax !== null && entered !== undefined && entered !== "" && (parseInt(entered) === _rowEffPlMax || hasDotSuffix);
                     var dExtraX = (vercelData.doctorExtra || {})[d.key] || {};
                     var _cMX = _matchCardiologo(d.key, cardiologi) || {};
                     var dTypeX = (vercelData.doctorTypes || {})[d.key] || "";
@@ -25033,7 +25084,7 @@ body {
                     var key = "d" + dayIdx + "_plx_" + d.key;
                     var entered = plsCounts[key];
                     var hasDotSuffix = entered !== undefined && /^\d+\./.test(entered);
-                    var isComplete = entered !== undefined && entered !== "" && d.max && (parseInt(entered) === parseInt(d.max) || hasDotSuffix);
+                    var _rowEffMaxX = dispOverrides[key] !== undefined ? dispOverrides[key] : parseInt(d.max); var isComplete = entered !== undefined && entered !== "" && d.max && (parseInt(entered) === _rowEffMaxX || hasDotSuffix);
                     return flatRow([
                       { content: (0, _js)("span", { style: { display: "inline-flex", alignItems: "center", gap: "3px" }, children: [_docTip((0, _j)("span", { style: { fontWeight: "500", fontSize: "11px", color: entered === "." ? "#e53e3e" : (hasDotSuffix ? "#7c3aed" : "inherit"), textDecoration: entered === "." ? "line-through" : "none" }, children: formatShortName(d.name) }), d.key, cardiologi), (0, _j)("button", { style: { fontSize: "8px", color: "#ef4444", background: "transparent", border: "none", cursor: "pointer", padding: "0 2px" }, onClick: function(){ setExtraPlDocsDay(function(p){ return p.filter(function(_,j){return j!==i;}); }); }, children: "\u2715" })] }) },
                       { content: renderCountCell(plsCounts, setPlsCounts, key, d.max, "#7c3aed") }
