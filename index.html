@@ -410,6 +410,7 @@ body {
     window._lastCountBlur    = 0;
     window._pendingRealtimeSnap = {};
     window._lastSavedUpdatedAt = null; // FIX race-condition: timestamp ultimo salvataggio locale
+    window._holterLocalDirty = { hc: {}, hp: {}, spiro: {}, pls: {}, disp_overrides: {}, ecg_times: {}, extra_hc: {}, extra_hp: {}, extra_sp: {}, extra_pl: {} };
 
     document.addEventListener('focusin', function(e) {
       if (e.target && e.target.classList &&
@@ -743,19 +744,29 @@ body {
             var ex = r.data || {};
             var prevUpdatedAt = ex.updated_at || null;
             var newUpdatedAt = new Date().toISOString();
+            var _dirty = window._holterLocalDirty || {};
+            // FIX collaborazione: merge solo i campi realmente modificati dall'utente (dirty),
+            // non l'intero stato locale che può contenere valori obsoleti caricati prima delle
+            // modifiche di altri utenti — evita la sovrascrittura involontaria.
+            var _dispDirty = _dirty.disp_overrides || {};
+            var _dispMerged = Object.assign({}, ex.disp_overrides || {});
+            Object.keys(_dispDirty).forEach(function(k) {
+              if (_dispDirty[k] === null) { delete _dispMerged[k]; }
+              else { _dispMerged[k] = _dispDirty[k]; }
+            });
             var merged = {
               week_key:   weekKey,
-              hc:         Object.assign({}, ex.hc        || {}, hc),
-              hp:         Object.assign({}, ex.hp        || {}, hp),
-              spiro:      Object.assign({}, ex.spiro     || {}, spiro),
-              pls:        Object.assign({}, ex.pls       || {}, pls),
+              hc:         Object.assign({}, ex.hc        || {}, _dirty.hc || {}),
+              hp:         Object.assign({}, ex.hp        || {}, _dirty.hp || {}),
+              spiro:      Object.assign({}, ex.spiro     || {}, _dirty.spiro || {}),
+              pls:        Object.assign({}, ex.pls       || {}, _dirty.pls || {}),
               notes:      notes,
-              ecg_times:  Object.assign({}, ex.ecg_times || {}, ecgTimes),
-              extra_hc:   Object.assign({}, ex.extra_hc  || {}, extraHc),
-              extra_hp:   Object.assign({}, ex.extra_hp  || {}, extraHp),
-              extra_sp:   Object.assign({}, ex.extra_sp  || {}, extraSp),
-              extra_pl:   Object.assign({}, ex.extra_pl  || {}, extraPl),
-              disp_overrides: Object.assign({}, ex.disp_overrides || {}, dispOverrides || {}),
+              ecg_times:  Object.assign({}, ex.ecg_times || {}, _dirty.ecg_times || {}),
+              extra_hc:   Object.assign({}, ex.extra_hc  || {}, _dirty.extra_hc || {}),
+              extra_hp:   Object.assign({}, ex.extra_hp  || {}, _dirty.extra_hp || {}),
+              extra_sp:   Object.assign({}, ex.extra_sp  || {}, _dirty.extra_sp || {}),
+              extra_pl:   Object.assign({}, ex.extra_pl  || {}, _dirty.extra_pl || {}),
+              disp_overrides: _dispMerged,
               updated_at: newUpdatedAt
             };
             // Se la riga esiste, usa UPDATE con controllo su updated_at (lock ottimistico)
@@ -23897,10 +23908,10 @@ body {
           var _dbTs = d.updatedAt ? new Date(d.updatedAt).getTime() : 0;
           var _src = (_draft && _draft._ts > _dbTs) ? _draft : d;
           if (_draft && _draft._ts > _dbTs) console.log('[holter] Draft locale ripristinato');
-          if (_src.hc) setHcCounts(_src.hc);
-          if (_src.hp) setHpCounts(_src.hp);
-          if (_src.spiro) setSpiroCounts(_src.spiro);
-          if (_src.pls) setPlsCounts(_src.pls);
+          if (_src.hc) setHcCounts(function(prev){ var _dh=(window._holterLocalDirty||{}).hc||{}; return Object.assign({},_src.hc,(function(_d,_prev){var o={}; Object.keys(_d).forEach(function(k){o[k]=_prev[k];}); return o;})(_dh,prev)); });
+          if (_src.hp) setHpCounts(function(prev){ var _dh=(window._holterLocalDirty||{}).hp||{}; return Object.assign({},_src.hp,(function(_d,_prev){var o={}; Object.keys(_d).forEach(function(k){o[k]=_prev[k];}); return o;})(_dh,prev)); });
+          if (_src.spiro) setSpiroCounts(function(prev){ var _dh=(window._holterLocalDirty||{}).spiro||{}; return Object.assign({},_src.spiro,(function(_d,_prev){var o={}; Object.keys(_d).forEach(function(k){o[k]=_prev[k];}); return o;})(_dh,prev)); });
+          if (_src.pls) setPlsCounts(function(prev){ var _dh=(window._holterLocalDirty||{}).pls||{}; return Object.assign({},_src.pls,(function(_d,_prev){var o={}; Object.keys(_d).forEach(function(k){o[k]=_prev[k];}); return o;})(_dh,prev)); });
           if (_src.notes) setDoctorNotes(_src.notes);
           if (_src.ecgTimes) setEcgTimes(_src.ecgTimes);
           if (_src.extraHc && !Array.isArray(_src.extraHc)) setExtraHcDocs(_src.extraHc);
@@ -23940,6 +23951,7 @@ body {
         savePromise.then(function() {
           // Riattiva la ricezione di snapshot solo se non c'è un altro save in coda
           try { localStorage.removeItem('holter_draft_' + weekKey); } catch(e) {}
+          window._holterLocalDirty = { hc: {}, hp: {}, spiro: {}, pls: {}, disp_overrides: {}, ecg_times: {}, extra_hc: {}, extra_hp: {}, extra_sp: {}, extra_pl: {} };
           setTimeout(function() {
             // Se nel frattempo l'utente ha digitato, saveTimer è già stato sostituito
             // e ignoreSnap verrà gestito dal prossimo ciclo di save
@@ -24347,7 +24359,7 @@ body {
     });
 
     // ── Helper: input cell with "su X" inline ──────────────────────
-    function renderCountCell(counts, setCounts, stateKey, max, accentColor) {
+    function renderCountCell(counts, setCounts, stateKey, max, accentColor, sectionName) {
       var entered = counts[stateKey];
       var hasValue = entered !== undefined && entered !== "";
       var _effMax = (dispOverrides[stateKey] !== undefined) ? dispOverrides[stateKey] : max;
@@ -24374,7 +24386,7 @@ body {
               },
               value: entered !== undefined ? entered : "",
               placeholder: numMax !== null ? String(numMax) : "\u2014",
-              onChange: function(e) { var v = e.target.value; if (v === "" || v === "." || /^\d+$/.test(v) || /^\d+\.$/.test(v)) { setCounts(function(p) { var n = Object.assign({}, p); n[stateKey] = v; return n; }); } }
+              onChange: function(e) { var v = e.target.value; if (v === "" || v === "." || /^\d+$/.test(v) || /^\d+\.$/.test(v)) { if (sectionName) { window._holterLocalDirty = window._holterLocalDirty || {}; window._holterLocalDirty[sectionName] = window._holterLocalDirty[sectionName] || {}; window._holterLocalDirty[sectionName][stateKey] = v; } setCounts(function(p) { var n = Object.assign({}, p); n[stateKey] = v; return n; }); } }
             }),
             editingDisp === stateKey
               ? (0, _j)("input", {
@@ -24391,15 +24403,15 @@ body {
                   onKeyDown: function(e) {
                     if (e.key === "Enter") {
                       var _nv = parseInt(editingDispVal);
-                      if (!isNaN(_nv) && _nv >= 0) { setDispOverrides(function(p) { var n = Object.assign({}, p); n[stateKey] = _nv; return n; }); }
-                      else if (editingDispVal === "") { setDispOverrides(function(p) { var n = Object.assign({}, p); delete n[stateKey]; return n; }); }
+                      if (!isNaN(_nv) && _nv >= 0) { window._holterLocalDirty = window._holterLocalDirty || {}; window._holterLocalDirty.disp_overrides = window._holterLocalDirty.disp_overrides || {}; window._holterLocalDirty.disp_overrides[stateKey] = _nv; setDispOverrides(function(p) { var n = Object.assign({}, p); n[stateKey] = _nv; return n; }); }
+                      else if (editingDispVal === "") { window._holterLocalDirty = window._holterLocalDirty || {}; window._holterLocalDirty.disp_overrides = window._holterLocalDirty.disp_overrides || {}; window._holterLocalDirty.disp_overrides[stateKey] = null; setDispOverrides(function(p) { var n = Object.assign({}, p); delete n[stateKey]; return n; }); }
                       setEditingDisp(null);
                     } else if (e.key === "Escape") { setEditingDisp(null); }
                   },
                   onBlur: function() {
                     var _nv = parseInt(editingDispVal);
-                    if (!isNaN(_nv) && _nv >= 0) { setDispOverrides(function(p) { var n = Object.assign({}, p); n[stateKey] = _nv; return n; }); }
-                    else if (editingDispVal === "") { setDispOverrides(function(p) { var n = Object.assign({}, p); delete n[stateKey]; return n; }); }
+                    if (!isNaN(_nv) && _nv >= 0) { window._holterLocalDirty = window._holterLocalDirty || {}; window._holterLocalDirty.disp_overrides = window._holterLocalDirty.disp_overrides || {}; window._holterLocalDirty.disp_overrides[stateKey] = _nv; setDispOverrides(function(p) { var n = Object.assign({}, p); n[stateKey] = _nv; return n; }); }
+                    else if (editingDispVal === "") { window._holterLocalDirty = window._holterLocalDirty || {}; window._holterLocalDirty.disp_overrides = window._holterLocalDirty.disp_overrides || {}; window._holterLocalDirty.disp_overrides[stateKey] = null; setDispOverrides(function(p) { var n = Object.assign({}, p); delete n[stateKey]; return n; }); }
                     setEditingDisp(null);
                   }
                 })
@@ -24756,9 +24768,9 @@ body {
                           var rowComplete = d.maxPls ? (hcComplete && (d.soloHc || hpComplete) && plsComplete) : (hcComplete && (d.soloHc || hpComplete)); var nameGreen = rowComplete || (d.maxHc === "con." && d.maxHp === "con." && enteredHc !== undefined && enteredHc !== "" && enteredHp !== undefined && enteredHp !== "" && parseInt(enteredHc) >= 5 && parseInt(enteredHp) >= 5);
                           return flatRow([
                             { content: renderDocWithNote(fsBadges.length > 0 ? _docTip((0, _js)("span", { style: { fontWeight: nameGreen ? "700" : "500", fontSize: "11px", color: nameGreen ? "#16a34a" : "inherit", textDecoration: "none" }, children: [(0, _j)("div", { children: formatShortName(d.name) }), (0, _j)("div", { style: { display: "flex", flexWrap: "wrap", gap: "2px" }, children: fsBadges })] }), d.key, cardiologi) : _docTip((0, _j)("span", { style: { fontWeight: nameGreen ? "700" : "500", fontSize: "11px", color: nameGreen ? "#16a34a" : "inherit", textDecoration: "none" }, children: formatShortName(d.name) }), d.key, cardiologi), "d" + dayIdx + "_" + d.key, formatShortName(d.name)) },
-                            { content: (0, _j)("input", { type: "text", style: { width: "32px", height: "22px", textAlign: "center", fontSize: "11px", border: hcComplete ? "1px solid rgba(56,161,105,0.5)" : (enteredHc === "." ? "1px solid rgba(229,62,62,0.4)" : "1px solid rgba(0,0,0,0.12)"), borderRadius: "4px", outline: "none", background: hcComplete ? "rgba(56,161,105,0.12)" : (enteredHc === "." ? "rgba(229,62,62,0.06)" : "transparent"), color: hcComplete ? "#16a34a" : "#374151", fontWeight: hcComplete ? "700" : "400" }, value: enteredHc !== undefined ? enteredHc : "", placeholder: "", onChange: function(e) { var v = e.target.value; if (v === "" || v === "." || /^\d+$/.test(v) || /^\d+\.$/.test(v)) { var k = tcHcKey; setHcCounts(function(p) { var n = Object.assign({}, p); n[k] = v; return n; }); } } }) },
+                            { content: (0, _j)("input", { type: "text", style: { width: "32px", height: "22px", textAlign: "center", fontSize: "11px", border: hcComplete ? "1px solid rgba(56,161,105,0.5)" : (enteredHc === "." ? "1px solid rgba(229,62,62,0.4)" : "1px solid rgba(0,0,0,0.12)"), borderRadius: "4px", outline: "none", background: hcComplete ? "rgba(56,161,105,0.12)" : (enteredHc === "." ? "rgba(229,62,62,0.06)" : "transparent"), color: hcComplete ? "#16a34a" : "#374151", fontWeight: hcComplete ? "700" : "400" }, value: enteredHc !== undefined ? enteredHc : "", placeholder: "", onChange: function(e) { var v = e.target.value; if (v === "" || v === "." || /^\d+$/.test(v) || /^\d+\.$/.test(v)) { var k = tcHcKey; window._holterLocalDirty = window._holterLocalDirty || {}; window._holterLocalDirty.hc = window._holterLocalDirty.hc || {}; window._holterLocalDirty.hc[k] = v; setHcCounts(function(p) { var n = Object.assign({}, p); n[k] = v; return n; }); } } }) },
                             { content: enteredHc === "." ? (0, _j)("span", { style: { fontSize: "10px", color: "#e53e3e", fontWeight: "700", display: "block", textAlign: "center", textDecoration: "line-through" }, children: d.maxHc ? String(d.maxHc) : "" }) : hcDotSuffix ? (0, _j)("span", { style: { fontSize: "10px", color: "#16a34a", fontWeight: "700", display: "block", textAlign: "center", textDecoration: "line-through" }, children: d.maxHc ? String(d.maxHc) : "" }) : (0, _j)("span", { style: { fontSize: "10px", color: "rgba(0,0,0,0.4)", fontWeight: "500", display: "block", textAlign: "center" }, children: d.maxHc ? String(d.maxHc) : "" }) },
-                            { content: d.soloHc ? "" : (0, _j)("input", { type: "text", style: { width: "32px", height: "22px", textAlign: "center", fontSize: "11px", border: hpComplete ? "1px solid rgba(56,161,105,0.5)" : (enteredHp === "." ? "1px solid rgba(229,62,62,0.4)" : "1px solid rgba(0,0,0,0.12)"), borderRadius: "4px", outline: "none", background: hpComplete ? "rgba(56,161,105,0.12)" : (enteredHp === "." ? "rgba(229,62,62,0.06)" : "transparent"), color: hpComplete ? "#16a34a" : "#374151", fontWeight: hpComplete ? "700" : "400" }, value: enteredHp !== undefined ? enteredHp : "", placeholder: "", onChange: function(e) { var v = e.target.value; if (v === "" || v === "." || /^\d+$/.test(v) || /^\d+\.$/.test(v)) { var k = tcHpKey; setHpCounts(function(p) { var n = Object.assign({}, p); n[k] = v; return n; }); } } }) },
+                            { content: d.soloHc ? "" : (0, _j)("input", { type: "text", style: { width: "32px", height: "22px", textAlign: "center", fontSize: "11px", border: hpComplete ? "1px solid rgba(56,161,105,0.5)" : (enteredHp === "." ? "1px solid rgba(229,62,62,0.4)" : "1px solid rgba(0,0,0,0.12)"), borderRadius: "4px", outline: "none", background: hpComplete ? "rgba(56,161,105,0.12)" : (enteredHp === "." ? "rgba(229,62,62,0.06)" : "transparent"), color: hpComplete ? "#16a34a" : "#374151", fontWeight: hpComplete ? "700" : "400" }, value: enteredHp !== undefined ? enteredHp : "", placeholder: "", onChange: function(e) { var v = e.target.value; if (v === "" || v === "." || /^\d+$/.test(v) || /^\d+\.$/.test(v)) { var k = tcHpKey; window._holterLocalDirty = window._holterLocalDirty || {}; window._holterLocalDirty.hp = window._holterLocalDirty.hp || {}; window._holterLocalDirty.hp[k] = v; setHpCounts(function(p) { var n = Object.assign({}, p); n[k] = v; return n; }); } } }) },
                             { content: d.soloHc ? "" : (enteredHp === "." ? (0, _j)("span", { style: { fontSize: "10px", color: "#e53e3e", fontWeight: "700", display: "block", textAlign: "center", textDecoration: "line-through" }, children: d.maxHp ? String(d.maxHp) : "" }) : hpDotSuffix ? (0, _j)("span", { style: { fontSize: "10px", color: "#16a34a", fontWeight: "700", display: "block", textAlign: "center", textDecoration: "line-through" }, children: d.maxHp ? String(d.maxHp) : "" }) : (0, _j)("span", { style: { fontSize: "10px", color: "rgba(0,0,0,0.4)", fontWeight: "500", display: "block", textAlign: "center" }, children: d.maxHp ? String(d.maxHp) : "" })) },
                             ...(function() {
                               if (!d.maxPls) return [{ content: "" }, { content: "" }];
@@ -24767,7 +24779,7 @@ body {
                               var _rawPlsMax = parseInt(d.maxPls); var numPlsMax = !isNaN(_rawPlsMax) && dispOverrides[tcPlsKey] !== undefined ? dispOverrides[tcPlsKey] : _rawPlsMax;
                               var plsDotSuffixInner = enteredPls !== undefined && /^\d+\.$/.test(enteredPls); var plsComplete = !isNaN(numPlsMax) && enteredPls !== undefined && enteredPls !== "" && (parseInt(enteredPls) === numPlsMax || plsDotSuffixInner);
                               return [
-                                { content: (0, _j)("input", { type: "text", style: { width: "32px", height: "22px", textAlign: "center", fontSize: "11px", border: plsComplete ? "1px solid rgba(56,161,105,0.5)" : (enteredPls === "." ? "1px solid rgba(124,58,237,0.4)" : "1px solid rgba(0,0,0,0.12)"), borderRadius: "4px", outline: "none", background: plsComplete ? "rgba(56,161,105,0.12)" : (enteredPls === "." ? "rgba(124,58,237,0.06)" : "transparent"), color: plsComplete ? "#16a34a" : "#374151", fontWeight: plsComplete ? "700" : "400" }, value: enteredPls !== undefined ? enteredPls : "", placeholder: "", onChange: function(e) { var v = e.target.value; if (v === "" || v === "." || /^\d+$/.test(v) || /^\d+\.$/.test(v)) { var k = tcPlsKey; setPlsCounts(function(p) { var n = Object.assign({}, p); n[k] = v; return n; }); } } }) },
+                                { content: (0, _j)("input", { type: "text", style: { width: "32px", height: "22px", textAlign: "center", fontSize: "11px", border: plsComplete ? "1px solid rgba(56,161,105,0.5)" : (enteredPls === "." ? "1px solid rgba(124,58,237,0.4)" : "1px solid rgba(0,0,0,0.12)"), borderRadius: "4px", outline: "none", background: plsComplete ? "rgba(56,161,105,0.12)" : (enteredPls === "." ? "rgba(124,58,237,0.06)" : "transparent"), color: plsComplete ? "#16a34a" : "#374151", fontWeight: plsComplete ? "700" : "400" }, value: enteredPls !== undefined ? enteredPls : "", placeholder: "", onChange: function(e) { var v = e.target.value; if (v === "" || v === "." || /^\d+$/.test(v) || /^\d+\.$/.test(v)) { var k = tcPlsKey; window._holterLocalDirty = window._holterLocalDirty || {}; window._holterLocalDirty.pls = window._holterLocalDirty.pls || {}; window._holterLocalDirty.pls[k] = v; setPlsCounts(function(p) { var n = Object.assign({}, p); n[k] = v; return n; }); } } }) },
                                 { content: enteredPls === "." ? (0, _j)("span", { style: { fontSize: "10px", color: "#e53e3e", fontWeight: "700", display: "block", textAlign: "center", textDecoration: "line-through" }, children: String(d.maxPls) }) : plsDotSuffixInner ? (0, _j)("span", { style: { fontSize: "10px", color: "#16a34a", fontWeight: "700", display: "block", textAlign: "center", textDecoration: "line-through" }, children: String(d.maxPls) }) : (0, _j)("span", { style: { fontSize: "10px", color: "rgba(0,0,0,0.4)", fontWeight: "500", display: "block", textAlign: "center" }, children: String(d.maxPls) }) }
                               ];
                             })()
@@ -24853,8 +24865,8 @@ body {
                         var htAllDone = htHcDone && htHpDone;
                         return flatRow([
                           { content: renderDocWithNote(htBadges.length > 0 ? _docTip((0, _js)("span", { style: { fontWeight: htAllDone ? "700" : "500", fontSize: "11px", color: htAllDone ? "#16a34a" : "inherit" }, children: [(0, _j)("div", { children: formatShortName(d.name) }), (0, _j)("div", { style: { display: "flex", flexWrap: "wrap", gap: "2px" }, children: htBadges })] }), d.key, cardiologi) : _docTip((0, _j)("span", { style: { fontWeight: htAllDone ? "700" : "500", fontSize: "11px", color: htAllDone ? "#16a34a" : "inherit" }, children: formatShortName(d.name) }), d.key, cardiologi), "d" + dayIdx + "_" + d.key, formatShortName(d.name)) },
-                          { content: renderCountCell(hcCounts, setHcCounts, htHcKey, 10, "#e53e3e") },
-                          { content: renderCountCell(hpCounts, setHpCounts, htHpKey, 10, "#38a169") }
+                          { content: renderCountCell(hcCounts, setHcCounts, htHcKey, 10, "#e53e3e", "hc") },
+                          { content: renderCountCell(hpCounts, setHpCounts, htHpKey, 10, "#38a169", "hp") }
                         ], "ht_" + i, htAllDone ? { background: "rgba(56,161,105,0.04)" } : {}, i);
                       });
                       // ── Domenica: mostra medici holter domenica quando è sabato ──
@@ -24878,8 +24890,8 @@ body {
                           var sunAllDone = sunHcDone && sunHpDone;
                           htRows.push(flatRow([
                             { content: sunBadges.length > 0 ? _docTip((0, _js)("span", { style: { fontWeight: sunAllDone ? "700" : "500", fontSize: "11px", color: sunAllDone ? "#16a34a" : "#8b5cf6" }, children: [(0, _j)("div", { children: formatShortName(d.name) }), (0, _j)("div", { style: { display: "flex", flexWrap: "wrap", gap: "2px" }, children: sunBadges })] }), d.key, cardiologi) : _docTip((0, _j)("span", { style: { fontWeight: sunAllDone ? "700" : "500", fontSize: "11px", color: sunAllDone ? "#16a34a" : "#8b5cf6" }, children: formatShortName(d.name) }), d.key, cardiologi) },
-                            { content: renderCountCell(hcCounts, setHcCounts, sunHcKey, 10, "#e53e3e") },
-                            { content: renderCountCell(hpCounts, setHpCounts, sunHpKey, 10, "#38a169") }
+                            { content: renderCountCell(hcCounts, setHcCounts, sunHcKey, 10, "#e53e3e", "hc") },
+                            { content: renderCountCell(hpCounts, setHpCounts, sunHpKey, 10, "#38a169", "hp") }
                           ], "sun_" + i, sunAllDone ? { background: "rgba(56,161,105,0.04)" } : { background: "rgba(139,92,246,0.03)" }, i));
                         });
                       }
@@ -24914,7 +24926,7 @@ body {
                     var key = "d" + dayIdx + "_hc_" + d.key;
                     var entered = hcCounts[key];
                     var hasDotSuffix = entered !== undefined && /^\d+\./.test(entered);
-                    var _rowEffMax = dispOverrides[key] !== undefined ? dispOverrides[key] : parseInt(d.max); var isComplete = entered !== undefined && entered !== "" && (parseInt(entered) === _rowEffMax || hasDotSuffix);
+                    var isComplete = entered !== undefined && entered !== "" && (parseInt(entered) === parseInt(d.max) || hasDotSuffix);
                     var dExtraX = (vercelData.doctorExtra || {})[d.key] || {};
                     var _cMX = _matchCardiologo(d.key, cardiologi) || {};
                     var dTypeX = (vercelData.doctorTypes || {})[d.key] || "";
@@ -24924,7 +24936,7 @@ body {
                     if (_cMX.firma === "SI" || (!_cMX.firma && dExtraX.firmaDigitale)) xBadges.push((0, _j)("span", { key: "firma", title: "Firma Digitale", style: { fontSize: "9px", color: "#374151", border: "1px solid rgba(55,65,81,0.3)", borderRadius: "3px", padding: "1px 3px", marginLeft: "2px", display: "inline-flex", alignItems: "center" }, children: (0, _js)("svg", { width: "9", height: "9", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round", children: [(0, _j)("path", { key: "pa", d: "M12 20h9" }), (0, _j)("path", { key: "pb", d: "M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" })] }) }));
                     return flatRow([
                       { content: renderDocWithNote(_docTip(xBadges.length > 0 ? (0, _js)("span", { style: { fontWeight: "500", fontSize: "12px", color: entered === "." ? "#e53e3e" : (isComplete ? "#38a169" : "inherit"), textDecoration: entered === "." ? "line-through" : "none" }, children: [(0, _j)("div", { children: formatShortName(d.name) }), (0, _j)("div", { style: { display: "flex", flexWrap: "wrap", gap: "2px" }, children: xBadges })] }) : (0, _j)("span", { style: { fontWeight: "500", fontSize: "12px", color: entered === "." ? "#e53e3e" : (isComplete ? "#38a169" : "inherit"), textDecoration: entered === "." ? "line-through" : "none" }, children: formatShortName(d.name) }), d.key, cardiologi), "d" + dayIdx + "_" + d.key, formatShortName(d.name)) },
-                      { content: renderCountCell(hcCounts, setHcCounts, key, d.max, "#e53e3e") }
+                      { content: renderCountCell(hcCounts, setHcCounts, key, d.max, "#e53e3e", "hc") }
                     ], "hc_" + i, isComplete ? { background: "rgba(56,161,105,0.04)" } : (entered === "." ? { background: "rgba(229,62,62,0.06)" } : {}), i);
                   }),
                   "Nessuno"
@@ -24935,10 +24947,10 @@ body {
                     var key = "d" + dayIdx + "_hcx_" + d.key;
                     var entered = hcCounts[key];
                     var hasDotSuffix = entered !== undefined && /^\d+\./.test(entered);
-                    var _rowEffMaxX = dispOverrides[key] !== undefined ? dispOverrides[key] : parseInt(d.max); var isComplete = entered !== undefined && entered !== "" && d.max && (parseInt(entered) === _rowEffMaxX || hasDotSuffix);
+                    var isComplete = entered !== undefined && entered !== "" && d.max && (parseInt(entered) === parseInt(d.max) || hasDotSuffix);
                     return flatRow([
                       { content: (0, _js)("span", { style: { display: "inline-flex", alignItems: "center", gap: "3px" }, children: [_docTip((0, _j)("span", { style: { fontWeight: "500", fontSize: "11px", color: entered === "." ? "#e53e3e" : (hasDotSuffix ? "#38a169" : "inherit"), textDecoration: entered === "." ? "line-through" : "none" }, children: formatShortName(d.name) }), d.key, cardiologi), (0, _j)("button", { style: { fontSize: "8px", color: "#ef4444", background: "transparent", border: "none", cursor: "pointer", padding: "0 2px" }, onClick: function(){ setExtraHcDocsDay(function(p){ return p.filter(function(_,j){return j!==i;}); }); }, children: "\u2715" })] }) },
-                      { content: renderCountCell(hcCounts, setHcCounts, key, d.max, "#e53e3e") }
+                      { content: renderCountCell(hcCounts, setHcCounts, key, d.max, "#e53e3e", "hc") }
                     ], "hcx_" + i, isComplete ? { background: "rgba(56,161,105,0.04)" } : (entered === "." ? { background: "rgba(229,62,62,0.06)" } : (hasDotSuffix ? { background: "rgba(56,161,105,0.04)" } : {})), i);
                   }),
                   null
@@ -24963,7 +24975,7 @@ body {
                     var key = "d" + dayIdx + "_hp_" + d.key;
                     var entered = hpCounts[key];
                     var hasDotSuffix = entered !== undefined && /^\d+\./.test(entered);
-                    var _rowEffMax = dispOverrides[key] !== undefined ? dispOverrides[key] : parseInt(d.max); var isComplete = entered !== undefined && entered !== "" && (parseInt(entered) === _rowEffMax || hasDotSuffix);
+                    var isComplete = entered !== undefined && entered !== "" && (parseInt(entered) === parseInt(d.max) || hasDotSuffix);
                     var dExtraX = (vercelData.doctorExtra || {})[d.key] || {};
                     var _cMX = _matchCardiologo(d.key, cardiologi) || {};
                     var dTypeX = (vercelData.doctorTypes || {})[d.key] || "";
@@ -24973,7 +24985,7 @@ body {
                     if (_cMX.firma === "SI" || (!_cMX.firma && dExtraX.firmaDigitale)) xBadges.push((0, _j)("span", { key: "firma", title: "Firma Digitale", style: { fontSize: "9px", color: "#374151", border: "1px solid rgba(55,65,81,0.3)", borderRadius: "3px", padding: "1px 3px", marginLeft: "2px", display: "inline-flex", alignItems: "center" }, children: (0, _js)("svg", { width: "9", height: "9", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round", children: [(0, _j)("path", { key: "pa", d: "M12 20h9" }), (0, _j)("path", { key: "pb", d: "M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" })] }) }));
                     return flatRow([
                       { content: renderDocWithNote(_docTip(xBadges.length > 0 ? (0, _js)("span", { style: { fontWeight: "500", fontSize: "12px", color: entered === "." ? "#e53e3e" : (isComplete ? "#38a169" : "inherit"), textDecoration: entered === "." ? "line-through" : "none" }, children: [(0, _j)("div", { children: formatShortName(d.name) }), (0, _j)("div", { style: { display: "flex", flexWrap: "wrap", gap: "2px" }, children: xBadges })] }) : (0, _j)("span", { style: { fontWeight: "500", fontSize: "12px", color: entered === "." ? "#e53e3e" : (isComplete ? "#38a169" : "inherit"), textDecoration: entered === "." ? "line-through" : "none" }, children: formatShortName(d.name) }), d.key, cardiologi), "d" + dayIdx + "_" + d.key, formatShortName(d.name)) },
-                      { content: renderCountCell(hpCounts, setHpCounts, key, d.max, "#38a169") }
+                      { content: renderCountCell(hpCounts, setHpCounts, key, d.max, "#38a169", "hp") }
                     ], "hp_" + i, isComplete ? { background: "rgba(56,161,105,0.04)" } : (entered === "." ? { background: "rgba(229,62,62,0.06)" } : {}), i);
                   }),
                   "Nessuno"
@@ -24984,10 +24996,10 @@ body {
                     var key = "d" + dayIdx + "_hpx_" + d.key;
                     var entered = hpCounts[key];
                     var hasDotSuffix = entered !== undefined && /^\d+\./.test(entered);
-                    var _rowEffMaxX = dispOverrides[key] !== undefined ? dispOverrides[key] : parseInt(d.max); var isComplete = entered !== undefined && entered !== "" && d.max && (parseInt(entered) === _rowEffMaxX || hasDotSuffix);
+                    var isComplete = entered !== undefined && entered !== "" && d.max && (parseInt(entered) === parseInt(d.max) || hasDotSuffix);
                     return flatRow([
                       { content: (0, _js)("span", { style: { display: "inline-flex", alignItems: "center", gap: "3px" }, children: [_docTip((0, _j)("span", { style: { fontWeight: "500", fontSize: "11px", color: entered === "." ? "#e53e3e" : (hasDotSuffix ? "#38a169" : "inherit"), textDecoration: entered === "." ? "line-through" : "none" }, children: formatShortName(d.name) }), d.key, cardiologi), (0, _j)("button", { style: { fontSize: "8px", color: "#ef4444", background: "transparent", border: "none", cursor: "pointer", padding: "0 2px" }, onClick: function(){ setExtraHpDocsDay(function(p){ return p.filter(function(_,j){return j!==i;}); }); }, children: "\u2715" })] }) },
-                      { content: renderCountCell(hpCounts, setHpCounts, key, d.max, "#38a169") }
+                      { content: renderCountCell(hpCounts, setHpCounts, key, d.max, "#38a169", "hp") }
                     ], "hpx_" + i, isComplete ? { background: "rgba(56,161,105,0.04)" } : (entered === "." ? { background: "rgba(229,62,62,0.06)" } : (hasDotSuffix ? { background: "rgba(56,161,105,0.04)" } : {})), i);
                   }),
                   null
@@ -25013,7 +25025,7 @@ body {
                     var spMax = d.isNumeric ? d.max : null;
                     var entered = spiroCounts[key];
                     var hasDotSuffix = entered !== undefined && /^\d+\./.test(entered);
-                    var _rowEffSpMax = dispOverrides[key] !== undefined ? dispOverrides[key] : (spMax !== null ? parseInt(spMax) : null); var isComplete = _rowEffSpMax !== null && entered !== undefined && entered !== "" && (parseInt(entered) === _rowEffSpMax || hasDotSuffix);
+                    var isComplete = spMax !== null && entered !== undefined && entered !== "" && (parseInt(entered) === parseInt(spMax) || hasDotSuffix);
                     var dExtraX = (vercelData.doctorExtra || {})[d.key] || {};
                     var _cMX = _matchCardiologo(d.key, cardiologi) || {};
                     var dTypeX = (vercelData.doctorTypes || {})[d.key] || "";
@@ -25023,7 +25035,7 @@ body {
                     if (_cMX.firma === "SI" || (!_cMX.firma && dExtraX.firmaDigitale)) xBadges.push((0, _j)("span", { key: "firma", title: "Firma Digitale", style: { fontSize: "9px", color: "#374151", border: "1px solid rgba(55,65,81,0.3)", borderRadius: "3px", padding: "1px 3px", marginLeft: "2px", display: "inline-flex", alignItems: "center" }, children: (0, _js)("svg", { width: "9", height: "9", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round", children: [(0, _j)("path", { key: "pa", d: "M12 20h9" }), (0, _j)("path", { key: "pb", d: "M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" })] }) }));
                     return flatRow([
                       { content: renderDocWithNote(_docTip(xBadges.length > 0 ? (0, _js)("span", { style: { fontWeight: "500", fontSize: "11px", color: entered === "." ? "#e53e3e" : (isComplete ? "#0891b2" : "inherit"), textDecoration: entered === "." ? "line-through" : "none" }, children: [(0, _j)("div", { children: formatShortName(d.name) }), (0, _j)("div", { style: { display: "flex", flexWrap: "wrap", gap: "2px" }, children: xBadges })] }) : (0, _j)("span", { style: { fontWeight: "500", fontSize: "11px", color: entered === "." ? "#e53e3e" : (isComplete ? "#0891b2" : "inherit"), textDecoration: entered === "." ? "line-through" : "none" }, children: formatShortName(d.name) }), d.key, cardiologi), "d" + dayIdx + "_" + d.key, formatShortName(d.name)) },
-                      { content: renderCountCell(spiroCounts, setSpiroCounts, key, spMax, "#0891b2") }
+                      { content: renderCountCell(spiroCounts, setSpiroCounts, key, spMax, "#0891b2", "spiro") }
                     ], "sp_" + i, isComplete ? { background: "rgba(8,145,178,0.04)" } : (entered === "." ? { background: "rgba(229,62,62,0.06)" } : {}));
                   }),
                   "Nessuno"
@@ -25034,10 +25046,10 @@ body {
                     var key = "d" + dayIdx + "_spx_" + d.key;
                     var entered = spiroCounts[key];
                     var hasDotSuffix = entered !== undefined && /^\d+\./.test(entered);
-                    var _rowEffMaxX = dispOverrides[key] !== undefined ? dispOverrides[key] : parseInt(d.max); var isComplete = entered !== undefined && entered !== "" && d.max && (parseInt(entered) === _rowEffMaxX || hasDotSuffix);
+                    var isComplete = entered !== undefined && entered !== "" && d.max && (parseInt(entered) === parseInt(d.max) || hasDotSuffix);
                     return flatRow([
                       { content: (0, _js)("span", { style: { display: "inline-flex", alignItems: "center", gap: "3px" }, children: [_docTip((0, _j)("span", { style: { fontWeight: "500", fontSize: "11px", color: entered === "." ? "#e53e3e" : (hasDotSuffix ? "#0891b2" : "inherit"), textDecoration: entered === "." ? "line-through" : "none" }, children: formatShortName(d.name) }), d.key, cardiologi), (0, _j)("button", { style: { fontSize: "8px", color: "#ef4444", background: "transparent", border: "none", cursor: "pointer", padding: "0 2px" }, onClick: function(){ setExtraSpDocsDay(function(p){ return p.filter(function(_,j){return j!==i;}); }); }, children: "\u2715" })] }) },
-                      { content: renderCountCell(spiroCounts, setSpiroCounts, key, d.max, "#0891b2") }
+                      { content: renderCountCell(spiroCounts, setSpiroCounts, key, d.max, "#0891b2", "spiro") }
                     ], "spx_" + i, isComplete ? { background: "rgba(8,145,178,0.04)" } : (entered === "." ? { background: "rgba(229,62,62,0.06)" } : (hasDotSuffix ? { background: "rgba(8,145,178,0.04)" } : {})), i);
                   }),
                   null
@@ -25063,7 +25075,7 @@ body {
                     var plMax = d.isNumeric ? d.max : null;
                     var entered = plsCounts[key];
                     var hasDotSuffix = entered !== undefined && /^\d+\./.test(entered);
-                    var _rowEffPlMax = dispOverrides[key] !== undefined ? dispOverrides[key] : (plMax !== null ? parseInt(plMax) : null); var isComplete = _rowEffPlMax !== null && entered !== undefined && entered !== "" && (parseInt(entered) === _rowEffPlMax || hasDotSuffix);
+                    var isComplete = plMax !== null && entered !== undefined && entered !== "" && (parseInt(entered) === parseInt(plMax) || hasDotSuffix);
                     var dExtraX = (vercelData.doctorExtra || {})[d.key] || {};
                     var _cMX = _matchCardiologo(d.key, cardiologi) || {};
                     var dTypeX = (vercelData.doctorTypes || {})[d.key] || "";
@@ -25073,7 +25085,7 @@ body {
                     if (_cMX.firma === "SI" || (!_cMX.firma && dExtraX.firmaDigitale)) xBadges.push((0, _j)("span", { key: "firma", title: "Firma Digitale", style: { fontSize: "9px", color: "#374151", border: "1px solid rgba(55,65,81,0.3)", borderRadius: "3px", padding: "1px 3px", marginLeft: "2px", display: "inline-flex", alignItems: "center" }, children: (0, _js)("svg", { width: "9", height: "9", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round", children: [(0, _j)("path", { key: "pa", d: "M12 20h9" }), (0, _j)("path", { key: "pb", d: "M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" })] }) }));
                     return flatRow([
                       { content: renderDocWithNote(_docTip(xBadges.length > 0 ? (0, _js)("span", { style: { fontWeight: "500", fontSize: "11px", color: entered === "." ? "#e53e3e" : (isComplete ? "#7c3aed" : "inherit"), textDecoration: entered === "." ? "line-through" : "none" }, children: [(0, _j)("div", { children: formatShortName(d.name) }), (0, _j)("div", { style: { display: "flex", flexWrap: "wrap", gap: "2px" }, children: xBadges })] }) : (0, _j)("span", { style: { fontWeight: "500", fontSize: "11px", color: entered === "." ? "#e53e3e" : (isComplete ? "#7c3aed" : "inherit"), textDecoration: entered === "." ? "line-through" : "none" }, children: formatShortName(d.name) }), d.key, cardiologi), "d" + dayIdx + "_" + d.key, formatShortName(d.name)) },
-                      { content: renderCountCell(plsCounts, setPlsCounts, key, plMax, "#7c3aed") }
+                      { content: renderCountCell(plsCounts, setPlsCounts, key, plMax, "#7c3aed", "pls") }
                     ], "pls_" + i, isComplete ? { background: "rgba(124,58,237,0.04)" } : (entered === "." ? { background: "rgba(229,62,62,0.06)" } : {}), i);
                   }),
                   "Nessuno"
@@ -25084,10 +25096,10 @@ body {
                     var key = "d" + dayIdx + "_plx_" + d.key;
                     var entered = plsCounts[key];
                     var hasDotSuffix = entered !== undefined && /^\d+\./.test(entered);
-                    var _rowEffMaxX = dispOverrides[key] !== undefined ? dispOverrides[key] : parseInt(d.max); var isComplete = entered !== undefined && entered !== "" && d.max && (parseInt(entered) === _rowEffMaxX || hasDotSuffix);
+                    var isComplete = entered !== undefined && entered !== "" && d.max && (parseInt(entered) === parseInt(d.max) || hasDotSuffix);
                     return flatRow([
                       { content: (0, _js)("span", { style: { display: "inline-flex", alignItems: "center", gap: "3px" }, children: [_docTip((0, _j)("span", { style: { fontWeight: "500", fontSize: "11px", color: entered === "." ? "#e53e3e" : (hasDotSuffix ? "#7c3aed" : "inherit"), textDecoration: entered === "." ? "line-through" : "none" }, children: formatShortName(d.name) }), d.key, cardiologi), (0, _j)("button", { style: { fontSize: "8px", color: "#ef4444", background: "transparent", border: "none", cursor: "pointer", padding: "0 2px" }, onClick: function(){ setExtraPlDocsDay(function(p){ return p.filter(function(_,j){return j!==i;}); }); }, children: "\u2715" })] }) },
-                      { content: renderCountCell(plsCounts, setPlsCounts, key, d.max, "#7c3aed") }
+                      { content: renderCountCell(plsCounts, setPlsCounts, key, d.max, "#7c3aed", "pls") }
                     ], "plx_" + i, isComplete ? { background: "rgba(124,58,237,0.04)" } : (entered === "." ? { background: "rgba(229,62,62,0.06)" } : (hasDotSuffix ? { background: "rgba(124,58,237,0.04)" } : {})), i);
                   }),
                   null
