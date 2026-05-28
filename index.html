@@ -717,15 +717,15 @@ body {
       } catch(e) { console.error('Supabase saveCardiologists error:', e); throw e; }
     };
 
+    // ── Tracking note: salva l'ultimo valore note salvato per evitare
+    //    sovrascritture involontarie quando il save è triggerato da altri campi ──
+    window._lastSavedNotes = null;
+
     window._fbSaveHolterCounts = function(weekKey, hc, hp, spiro, pls, notes, ecgTimes, extraHc, extraHp, extraSp, extraPl, dispOverrides) {
       var now = Date.now();
-      if (window._lastFbSave && now - window._lastFbSave < 800) {
+      if (window._lastFbSave && now - window._lastFbSave < 600) {
         clearTimeout(window._fbSaveRetry);
-        var retryDelay = 800 - (now - window._lastFbSave) + 100;
-        // BUGFIX: restituisce una promise che si risolve solo dopo che il retry
-        // ha effettivamente completato il salvataggio. In questo modo ignoreSnap
-        // rimane true per tutta la finestra di attesa, impedendo che un evento
-        // realtime di Supabase sovrascriva il valore appena digitato dall'utente.
+        var retryDelay = 600 - (now - window._lastFbSave) + 100;
         return new Promise(function(resolve, reject) {
           window._fbSaveRetry = setTimeout(function() {
             window._fbSaveHolterCounts(weekKey, hc, hp, spiro, pls, notes, ecgTimes, extraHc, extraHp, extraSp, extraPl, dispOverrides)
@@ -735,66 +735,61 @@ body {
       }
       window._lastFbSave = now;
 
-      // Optimistic locking con retry: legge lo stato corrente, tenta l'update
-      // condizionale (solo se updated_at non è cambiato), se c'è stato un
-      // cambiamento concorrente riprova fino a 3 volte.
-      function attemptSave(retries) {
-        return _sb.from('holter_counts').select('*').eq('week_key', weekKey).maybeSingle()
-          .then(function(r) {
-            var ex = r.data || {};
-            var prevUpdatedAt = ex.updated_at || null;
-            var newUpdatedAt = new Date().toISOString();
-            var _dirty = window._holterLocalDirty || {};
-            // FIX collaborazione: merge solo i campi realmente modificati dall'utente (dirty),
-            // non l'intero stato locale che può contenere valori obsoleti caricati prima delle
-            // modifiche di altri utenti — evita la sovrascrittura involontaria.
-            var _dispDirty = _dirty.disp_overrides || {};
-            var _dispMerged = Object.assign({}, ex.disp_overrides || {});
-            Object.keys(_dispDirty).forEach(function(k) {
-              if (_dispDirty[k] === null) { delete _dispMerged[k]; }
-              else { _dispMerged[k] = _dispDirty[k]; }
-            });
-            var merged = {
-              week_key:   weekKey,
-              hc:         Object.assign({}, ex.hc        || {}, _dirty.hc || {}),
-              hp:         Object.assign({}, ex.hp        || {}, _dirty.hp || {}),
-              spiro:      Object.assign({}, ex.spiro     || {}, _dirty.spiro || {}),
-              pls:        Object.assign({}, ex.pls       || {}, _dirty.pls || {}),
-              notes:      notes,
-              ecg_times:  Object.assign({}, ex.ecg_times || {}, _dirty.ecg_times || {}),
-              extra_hc:   Object.assign({}, ex.extra_hc  || {}, _dirty.extra_hc || {}),
-              extra_hp:   Object.assign({}, ex.extra_hp  || {}, _dirty.extra_hp || {}),
-              extra_sp:   Object.assign({}, ex.extra_sp  || {}, _dirty.extra_sp || {}),
-              extra_pl:   Object.assign({}, ex.extra_pl  || {}, _dirty.extra_pl || {}),
-              disp_overrides: _dispMerged,
-              updated_at: newUpdatedAt
-            };
-            // Se la riga esiste, usa UPDATE con controllo su updated_at (lock ottimistico)
-            // Se la riga è nuova, usa UPSERT direttamente
-            var writePromise = (prevUpdatedAt && ex.week_key)
-              ? _sb.from('holter_counts').update(merged).eq('week_key', weekKey).eq('updated_at', prevUpdatedAt).select('week_key')
-              : _sb.from('holter_counts').upsert(merged).select('week_key');
-            return writePromise.then(function(result) {
-              if (result.error) throw result.error;
-              // Se UPDATE ha colpito 0 righe → conflitto concorrente, riprova
-              if (prevUpdatedAt && ex.week_key && (!result.data || result.data.length === 0)) {
-                if (retries > 0) {
-                  return new Promise(function(res) { setTimeout(res, 150 + Math.random() * 200); })
-                    .then(function() { return attemptSave(retries - 1); });
-                }
-                // Dopo 3 tentativi forza la scrittura (evita stallo)
-                console.warn('Holter save: conflitto persistente, forzo la scrittura');
-                return _sb.from('holter_counts').upsert(merged)
-                  .then(function(r2) { if (r2.error) throw r2.error; window._lastSavedUpdatedAt = newUpdatedAt; }); // FIX
-              }
-              // FIX: salvataggio confermato → aggiorna il timestamp per scartare snap remoti vecchi
-              window._lastSavedUpdatedAt = newUpdatedAt;
-            });
-          })
-          .catch(function(e) { console.warn('Supabase holter save error:', e); throw e; });
-      }
+      // ── Raccolta SOLO dei campi effettivamente modificati dall'utente (dirty) ──
+      var _dirty = window._holterLocalDirty || {};
+      var dirtyHc    = (_dirty.hc        && Object.keys(_dirty.hc).length)        ? _dirty.hc        : {};
+      var dirtyHp    = (_dirty.hp        && Object.keys(_dirty.hp).length)        ? _dirty.hp        : {};
+      var dirtySpiro = (_dirty.spiro     && Object.keys(_dirty.spiro).length)     ? _dirty.spiro     : {};
+      var dirtyPls   = (_dirty.pls       && Object.keys(_dirty.pls).length)       ? _dirty.pls       : {};
+      var dirtyEcg   = (_dirty.ecg_times && Object.keys(_dirty.ecg_times).length) ? _dirty.ecg_times : {};
+      var dirtyExHc  = (_dirty.extra_hc  && Object.keys(_dirty.extra_hc).length)  ? _dirty.extra_hc  : {};
+      var dirtyExHp  = (_dirty.extra_hp  && Object.keys(_dirty.extra_hp).length)  ? _dirty.extra_hp  : {};
+      var dirtyExSp  = (_dirty.extra_sp  && Object.keys(_dirty.extra_sp).length)  ? _dirty.extra_sp  : {};
+      var dirtyExPl  = (_dirty.extra_pl  && Object.keys(_dirty.extra_pl).length)  ? _dirty.extra_pl  : {};
+      var dirtyDisp  = (_dirty.disp_overrides && Object.keys(_dirty.disp_overrides).length) ? _dirty.disp_overrides : {};
 
-      return attemptSave(3);
+      // Per le note: invia solo se effettivamente cambiate rispetto all'ultimo save
+      var notesChanged = (JSON.stringify(notes) !== JSON.stringify(window._lastSavedNotes));
+      var notesParam   = notesChanged ? notes : null;
+
+      // ── MERGE ATOMICO via Supabase RPC ──────────────────────────────────────
+      // La funzione PostgreSQL merge_holter_counts usa l'operatore || per fondere
+      // SOLO le chiavi inviate, senza toccare quelle degli altri utenti.
+      // Nessun read-modify-write, nessuna race condition, nessun retry necessario.
+      var _wk = weekKey;
+      return _sb.rpc('merge_holter_counts', {
+        p_week_key:       _wk,
+        p_hc:             dirtyHc,
+        p_hp:             dirtyHp,
+        p_spiro:          dirtySpiro,
+        p_pls:            dirtyPls,
+        p_notes:          notesParam,
+        p_ecg_times:      dirtyEcg,
+        p_extra_hc:       dirtyExHc,
+        p_extra_hp:       dirtyExHp,
+        p_extra_sp:       dirtyExSp,
+        p_extra_pl:       dirtyExPl,
+        p_disp_overrides: dirtyDisp
+      }).then(function(result) {
+        if (result.error) throw result.error;
+        var newTs = new Date().toISOString();
+        window._lastSavedUpdatedAt = newTs;
+        if (notesChanged) window._lastSavedNotes = JSON.parse(JSON.stringify(notes));
+
+        // ── Post-save refresh ─────────────────────────────────────────────────
+        // Dopo che ignoreSnap si disattiva (~1200ms), fa un "touch" leggero sul DB
+        // per generare un evento realtime con lo stato completo di tutti gli utenti.
+        // Questo garantisce che il client si riallinei anche se ha perso snapshot
+        // durante la finestra di ignoreSnap.
+        clearTimeout(window._holterPostSaveRefresh);
+        window._holterPostSaveRefresh = setTimeout(function() {
+          _sb.from('holter_counts')
+            .update({ updated_at: new Date().toISOString() })
+            .eq('week_key', _wk)
+            .then(function() { /* refresh silenzioso */ })
+            .catch(function() { /* ignora errori del refresh */ });
+        }, 1400);
+      });
     };
 
     window._fbOnSnapshot = function(onTurniChange, onCardsChange) {
