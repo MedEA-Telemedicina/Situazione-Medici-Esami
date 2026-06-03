@@ -941,6 +941,583 @@ body {
   
   </script>
 <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+
+<style id="_auth_css">
+/* ── Login Overlay ── */
+#_auth_overlay {
+  position:fixed;inset:0;z-index:99999;
+  background:linear-gradient(145deg,#e0f2ff 0%,#eaf6ff 45%,#dbeafe 100%);
+  display:flex;align-items:center;justify-content:center;
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  overflow:hidden;
+}
+#_auth_overlay::before {
+  content:'';position:absolute;inset:0;
+  background:
+    radial-gradient(ellipse 80% 60% at 20% 10%, rgba(14,165,233,0.10) 0%, transparent 60%),
+    radial-gradient(ellipse 60% 50% at 80% 90%, rgba(37,130,246,0.08) 0%, transparent 60%);
+  pointer-events:none;
+}
+#_auth_overlay::after {
+  content:'';position:absolute;inset:0;
+  background-image:radial-gradient(circle,rgba(14,165,233,0.08) 1px,transparent 1px);
+  background-size:28px 28px;
+  pointer-events:none;
+}
+#_auth_overlay.hidden{display:none!important;}
+
+#_auth_card {
+  position:relative;z-index:1;
+  width:400px;max-width:94vw;
+  background:rgba(255,255,255,0.97);
+  border-radius:22px;
+  box-shadow:0 24px 60px rgba(0,0,0,.15), 0 0 0 1px rgba(0,0,0,0.06);
+  overflow:hidden;
+}
+
+/* top brand strip */
+#_auth_brand {
+  background:linear-gradient(135deg,#ffffff 0%,#eff6ff 100%);
+  padding:28px 36px 32px;
+  display:flex;flex-direction:column;align-items:center;gap:10px;
+  position:relative;overflow:hidden;
+}
+/* smooth wave transition to white card */
+#_auth_brand::after {
+  content:'';position:absolute;bottom:-1px;left:0;right:0;height:30px;
+  background:rgba(255,255,255,0.97);
+  border-radius:18px 18px 0 0;
+  pointer-events:none;
+}
+/* logo on white pill — colours always visible */
+#_auth_logo_wrap {
+  position:relative;z-index:2;
+  background:transparent;
+  border-radius:14px;
+  padding:10px 22px;
+  display:flex;align-items:center;justify-content:center;
+}
+#_auth_brand img {
+  height:38px;display:block;
+  /* no filter — full brand colours */
+}
+#_auth_brand_sub {
+  position:relative;z-index:2;
+  display:inline-flex;align-items:center;gap:6px;
+  background:rgba(14,165,233,0.12);border:1px solid rgba(14,165,233,0.25);
+  color:#0369a1;font-size:11px;font-weight:700;letter-spacing:0.08em;
+  text-transform:uppercase;padding:4px 12px;border-radius:999px;
+}
+
+/* form area */
+#_auth_box {
+  padding:28px 36px 32px;
+}
+#_auth_box h2{margin:0 0 4px;font-size:21px;color:#0d1b2a;font-weight:800;letter-spacing:-0.02em;}
+#_auth_box p{margin:0 0 22px;font-size:13px;color:#94a3b8;}
+
+._auth_label{
+  display:block;font-size:11.5px;font-weight:700;color:#475569;
+  letter-spacing:0.04em;text-transform:uppercase;
+  margin-bottom:5px;margin-top:16px;
+}
+._auth_input_wrap { position:relative; }
+._auth_input_icon {
+  position:absolute;left:13px;top:50%;transform:translateY(-50%);
+  font-size:15px;pointer-events:none;opacity:0.45;
+}
+._auth_input{
+  width:100%;box-sizing:border-box;
+  padding:11px 13px 11px 38px;
+  border:1.5px solid #e2e8f0;border-radius:10px;
+  font-size:14px;outline:none;color:#1a2236;background:#f8fafc;
+  transition:border .15s, box-shadow .15s, background .15s;
+}
+._auth_input:focus{
+  border-color:#3b82f6;background:#fff;
+  box-shadow:0 0 0 3px rgba(59,130,246,0.14);
+}
+/* remove browser red :invalid styling */
+._auth_input:invalid {
+  box-shadow:none !important;
+  border-color:#e2e8f0 !important;
+}
+#_auth_err{
+  display:flex;align-items:center;gap:6px;
+  color:#dc2626;font-size:12px;font-weight:500;
+  margin-top:12px;min-height:18px;
+}
+#_auth_btn{
+  width:100%;padding:12px;margin-top:20px;
+  background:linear-gradient(135deg,#2563eb 0%,#1d4ed8 100%);
+  color:#fff;border:none;border-radius:10px;
+  font-size:15px;font-weight:700;cursor:pointer;
+  transition:opacity .15s, transform .1s;
+  font-family:inherit;
+}
+#_auth_btn:hover{opacity:.92;transform:translateY(-1px);}
+#_auth_btn:active{transform:translateY(0);}
+#_auth_footer_note{
+  text-align:center;font-size:11px;color:#94a3b8;margin-top:16px;
+}
+
+
+
+
+
+/* ── User Badge in Navbar ── */
+#_user_badge{
+  display:inline-flex;align-items:center;gap:8px;
+  background:rgba(0,0,0,.07);border-radius:999px;
+  padding:4px 10px 4px 6px;margin-left:8px;font-size:12px;color:var(--color-base-content,#1a2236);
+  cursor:pointer;border:1px solid rgba(0,0,0,.13);
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  position:relative;font-weight:500;
+}
+#_user_badge:hover{background:rgba(0,0,0,.12);}
+#_user_badge ._av{
+  width:24px;height:24px;border-radius:50%;background:#3b82f6;
+  display:flex;align-items:center;justify-content:center;
+  font-size:11px;font-weight:700;color:#fff;text-transform:uppercase;flex-shrink:0;
+}
+#_user_badge ._admin_pill{
+  background:#f59e0b;color:#fff;border-radius:999px;font-size:9px;
+  font-weight:700;padding:1px 5px;margin-left:2px;
+}
+#_badge_menu{
+  display:none;position:absolute;top:calc(100% + 6px);right:0;
+  background:#fff;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.18);
+  min-width:180px;padding:6px;z-index:9999;
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+}
+#_badge_menu.open{display:block;}
+#_badge_menu button{
+  display:block;width:100%;text-align:left;padding:9px 13px;
+  background:none;border:none;cursor:pointer;border-radius:8px;
+  font-size:13px;color:#1a2236;
+}
+#_badge_menu button:hover{background:#f3f4f6;}
+#_badge_menu button.danger{color:#e53e3e;}
+
+/* ── Modal base ── */
+._modal_overlay{
+  position:fixed;inset:0;z-index:99998;background:rgba(0,0,0,.45);
+  display:flex;align-items:center;justify-content:center;
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+}
+._modal_overlay.hidden{display:none!important;}
+._modal_box{
+  background:#fff;border-radius:18px;padding:32px 28px 24px;
+  width:420px;max-width:94vw;max-height:90vh;overflow-y:auto;
+  box-shadow:0 24px 60px rgba(0,0,0,.3);
+}
+._modal_box h3{margin:0 0 6px;font-size:18px;color:#1a2236;font-weight:700;}
+._modal_box p.sub{margin:0 0 20px;font-size:12px;color:#8898aa;}
+._modal_err{color:#e53e3e;font-size:12px;margin-top:6px;min-height:14px;}
+._modal_ok{color:#16a34a;font-size:12px;margin-top:6px;min-height:14px;}
+._modal_btn{padding:9px 18px;background:#3b82f6;color:#fff;border:none;
+  border-radius:9px;font-size:14px;font-weight:600;cursor:pointer;}
+._modal_btn:hover{background:#2563eb;}
+._modal_btn.sec{background:#f3f4f6;color:#374151;}
+._modal_btn.sec:hover{background:#e5e7eb;}
+._modal_btn.danger{background:#fee2e2;color:#dc2626;}
+._modal_btn.danger:hover{background:#fca5a5;}
+
+/* ── User management list ── */
+._ul_item{
+  display:flex;align-items:center;gap:8px;padding:10px 12px;
+  border-radius:10px;background:#f9fafb;border:1px solid #e5e7eb;
+  margin-bottom:8px;font-size:13px;
+}
+._ul_item ._av{
+  width:30px;height:30px;border-radius:50%;background:#3b82f6;
+  display:flex;align-items:center;justify-content:center;
+  font-size:12px;font-weight:700;color:#fff;text-transform:uppercase;flex-shrink:0;
+}
+._ul_item._admin_row ._av{background:#f59e0b;}
+._ul_name{flex:1;font-weight:600;color:#1a2236;}
+._ul_sub{font-size:11px;color:#8898aa;display:block;}
+._ul_actions{display:flex;gap:4px;}
+._icon_btn{padding:4px 8px;border-radius:6px;border:none;cursor:pointer;
+  font-size:11px;font-weight:600;}
+._icon_btn.prom{background:#fef3c7;color:#92400e;}
+._icon_btn.prom:hover{background:#fde68a;}
+._icon_btn.dem{background:#dbeafe;color:#1e40af;}
+._icon_btn.dem:hover{background:#bfdbfe;}
+._icon_btn.del{background:#fee2e2;color:#dc2626;}
+._icon_btn.del:hover{background:#fca5a5;}
+._add_user_form{background:#f9fafb;border-radius:12px;padding:16px;margin-top:14px;border:1px solid #e5e7eb;}
+._add_user_form h4{margin:0 0 12px;font-size:14px;color:#374151;}
+._row2{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+
+/* ── Presence indicator ── */
+#_presence_indicator {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px 4px 7px;
+  background: rgba(255,255,255,0.9);
+  border: 1px solid rgba(0,0,0,0.08);
+  border-radius: 20px;
+  cursor: default;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+  position: relative;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  margin-left: 6px;
+  flex-shrink: 0;
+}
+#_presence_indicator:hover #_pres_tooltip {
+  display: block;
+}
+#_pres_dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow: 0 0 0 2px rgba(34,197,94,0.25);
+  animation: _pres_pulse 2s infinite;
+  flex-shrink: 0;
+}
+@keyframes _pres_pulse {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(34,197,94,0.25); }
+  50%       { box-shadow: 0 0 0 4px rgba(34,197,94,0.12); }
+}
+#_pres_tooltip {
+  display: none;
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  background: #1a2236;
+  color: white;
+  border-radius: 12px;
+  padding: 10px 13px;
+  min-width: 160px;
+  max-width: 240px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.22);
+  z-index: 99997;
+  white-space: nowrap;
+}
+#_pres_tooltip::before {
+  content: '';
+  position: absolute;
+  top: -6px;
+  right: 14px;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-bottom: 6px solid #1a2236;
+}
+._pres_tt_title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.7px;
+  color: rgba(255,255,255,0.5);
+  text-transform: uppercase;
+  margin-bottom: 7px;
+}
+._pres_user {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 0;
+  font-size: 12px;
+  font-weight: 500;
+}
+._pres_av {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: linear-gradient(135deg, #3b82f6, #6366f1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+  color: white;
+  flex-shrink: 0;
+}
+
+/* ── Audit log modal ── */
+/* ═══ AUDIT LOG – redesign ═══════════════════════════════════════════ */
+#_audit_modal ._modal_box {
+  width: 800px;
+  max-width: 97vw;
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 20px;
+  box-shadow: 0 8px 48px rgba(0,0,0,0.18);
+}
+#_audit_header {
+  background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 60%, #1e40af 100%);
+  padding: 22px 28px 18px;
+  color: white;
+  flex-shrink: 0;
+  border-radius: 20px 20px 0 0;
+  position: relative;
+  overflow: hidden;
+}
+#_audit_header::before {
+  content:'';
+  position: absolute;
+  top:-40px; right:-40px;
+  width: 180px; height: 180px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.04);
+}
+#_audit_header::after {
+  content:'';
+  position: absolute;
+  bottom:-60px; left: 60px;
+  width: 220px; height: 220px;
+  border-radius: 50%;
+  background: rgba(99,102,241,0.12);
+}
+#_audit_header h3 { margin: 0 0 3px; font-size: 18px; font-weight: 800; letter-spacing: -0.02em; }
+#_audit_header p  { margin: 0; font-size: 12px; opacity: 0.6; }
+#_audit_stats {
+  display: flex;
+  gap: 16px;
+  margin-top: 14px;
+  position: relative;
+  z-index: 1;
+}
+._astat {
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 10px;
+  padding: 7px 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 64px;
+}
+._astat_n { font-size: 18px; font-weight: 800; color: white; line-height: 1.1; }
+._astat_l { font-size: 10px; color: rgba(255,255,255,0.55); margin-top: 1px; text-transform: uppercase; letter-spacing: 0.5px; }
+#_audit_toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 24px;
+  border-bottom: 1px solid #e9edf3;
+  flex-shrink: 0;
+  background: #f8fafc;
+}
+#_audit_search_wrap {
+  flex: 1;
+  position: relative;
+}
+#_audit_search_wrap::before {
+  content: '🔍';
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 12px;
+  pointer-events: none;
+}
+#_audit_filter {
+  width: 100%;
+  padding: 8px 12px 8px 32px;
+  border: 1.5px solid #e2e8f0;
+  border-radius: 10px;
+  font-size: 13px;
+  outline: none;
+  color: #374151;
+  background: white;
+  box-sizing: border-box;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+#_audit_filter:focus {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 3px rgba(99,102,241,0.1);
+}
+#_audit_count_badge {
+  font-size: 11px;
+  font-weight: 700;
+  color: #6366f1;
+  background: rgba(99,102,241,0.08);
+  border: 1px solid rgba(99,102,241,0.18);
+  border-radius: 20px;
+  padding: 3px 10px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+#_audit_body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 20px;
+  background: #f1f5f9;
+}
+#_audit_body::-webkit-scrollbar { width: 5px; }
+#_audit_body::-webkit-scrollbar-track { background: transparent; }
+#_audit_body::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 8px; }
+._audit_day_sep {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 0 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+._audit_day_sep::before,
+._audit_day_sep::after {
+  content:'';
+  flex:1;
+  height: 1px;
+  background: #e2e8f0;
+}
+._audit_row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 11px 14px;
+  border-radius: 12px;
+  margin-bottom: 5px;
+  background: white;
+  border: 1px solid rgba(0,0,0,0.04);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  transition: transform 0.1s, box-shadow 0.1s;
+  cursor: default;
+}
+._audit_row:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+}
+._audit_icon_wrap {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  flex-shrink: 0;
+}
+._audit_av {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  color: white;
+  flex-shrink: 0;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  align-self: flex-start;
+  margin-top: 1px;
+}
+._audit_info { flex: 1; min-width: 0; }
+._audit_top_row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+._audit_user { font-size: 13px; font-weight: 700; color: #1e293b; }
+._audit_desc { font-size: 12px; color: #64748b; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ── Audit desc strutturata ── */
+._audit_desc_block { margin-top: 5px; }
+._audit_desc_plain { font-size: 12px; color: #64748b; }
+._audit_desc_hdr {
+  font-size: 11px; color: #64748b; font-weight: 500; margin-bottom: 5px;
+}
+._audit_desc_hdr b { color: #1e293b; }
+
+/* Chips Holter */
+._audit_changes { display: flex; flex-wrap: wrap; gap: 4px; }
+._ach_chip {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 11px; font-weight: 500;
+  padding: 2px 9px; border-radius: 20px;
+  background: #f1f5f9; color: #475569; border: 1px solid #e2e8f0;
+  line-height: 1.6;
+}
+._ach_chip b { font-weight: 700; margin-right: 1px; }
+
+/* Righe Turni / Medici */
+._audit_changes_rows { display: flex; flex-direction: column; gap: 4px; }
+._ach_line { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+._ach_date {
+  background: #e0e7ff; color: #3730a3;
+  font-size: 10px; font-weight: 700;
+  padding: 1px 6px; border-radius: 4px;
+  white-space: nowrap; flex-shrink: 0;
+}
+._ach_field { color: #1e293b; font-weight: 600; font-size: 12px; }
+._ach_fields_list { color: #64748b; font-size: 11px; font-style: italic; }
+._ach_arrow { color: #94a3b8; font-size: 12px; flex-shrink: 0; }
+._ach_from { color: #ef4444; text-decoration: line-through; font-size: 12px; opacity: 0.75; }
+._ach_to { color: #059669; font-weight: 700; font-size: 12px; }
+._ach_empty { color: #94a3b8; font-style: italic; font-size: 12px; }
+
+/* Badge azione Medici */
+._ach_badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; border-radius: 4px;
+  font-size: 10px; font-weight: 800; flex-shrink: 0;
+}
+._ach_badge.add { background: #dcfce7; color: #166534; }
+._ach_badge.rem { background: #fee2e2; color: #991b1b; }
+._ach_badge.edit { background: #e0e7ff; color: #3730a3; }
+._ach_added { color: #059669; font-weight: 600; font-size: 12px; }
+._ach_removed { color: #ef4444; font-weight: 600; font-size: 12px; text-decoration: line-through; }
+._audit_table_pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 20px;
+  flex-shrink: 0;
+}
+._audit_time {
+  font-size: 11px;
+  color: #94a3b8;
+  text-align: right;
+  flex-shrink: 0;
+  white-space: nowrap;
+  line-height: 1.4;
+  align-self: flex-start;
+  padding-top: 2px;
+}
+._audit_time_rel { font-size: 10px; color: #b0bec9; display: block; }
+._audit_empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  color: #94a3b8;
+  gap: 10px;
+}
+._audit_empty_icon { font-size: 36px; opacity: 0.4; }
+._audit_empty_text { font-size: 13px; font-weight: 600; }
+._audit_empty_sub { font-size: 12px; opacity: 0.7; }
+#_audit_footer {
+  padding: 12px 24px;
+  border-top: 1px solid #e9edf3;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  background: #f8fafc;
+  border-radius: 0 0 20px 20px;
+}
+#_audit_footer_note {
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+</style>
+
 </head>
   <body class="bg-base-100 text-base-content">
     <div id="root"></div>
@@ -24800,9 +25377,9 @@ body {
                       var dExtra = (vercelData.doctorExtra || {})[d.key] || {};
                       var _cMecg = _matchCardiologo(d.key, cardiologi) || {};
                       var badges = [(0, _j)("span", { style: { fontSize: "9px", fontWeight: "600", color: "#d97706", border: "1px solid rgba(217,119,6,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "3px" }, children: ecgLabel })];
-                      if (_cMecg.ssr === "SI" || (!_cMecg.ssr && dExtra.ssr)) badges.push((0, _j)("span", { key: "ssr", title: "Convenzione SSR", style: { fontSize: "9px", fontWeight: "600", color: "#6366f1", border: "1px solid rgba(99,102,241,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "SSR" }));
-                      if (_cMecg.pediatrici === "SI" || (!_cMecg.pediatrici && dExtra.pediatrico)) badges.push((0, _j)("span", { key: "ped", title: "Pazienti Pediatrici", style: { fontSize: "9px", fontWeight: "600", color: "#ec4899", border: "1px solid rgba(236,72,153,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "\u{1F37C}" }));
-                      if (_cMecg.firma === "SI" || (!_cMecg.firma && dExtra.firmaDigitale)) badges.push((0, _j)("span", { key: "firma2", title: "Firma Digitale", style: { fontSize: "9px", color: "#374151", border: "1px solid rgba(55,65,81,0.3)", borderRadius: "3px", padding: "1px 3px", marginLeft: "2px", display: "inline-flex", alignItems: "center" }, children: (0, _js)("svg", { width: "9", height: "9", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round", children: [(0, _j)("path", { key: "pa", d: "M12 20h9" }), (0, _j)("path", { key: "pb", d: "M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" })] }) }));
+                      if (_cMecg.ssr === "SI" || (!_cMecg.ssr && dExtra.ssr)) badges.push((0, _j)("span", { title: "Convenzione SSR", style: { fontSize: "9px", fontWeight: "600", color: "#6366f1", border: "1px solid rgba(99,102,241,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "SSR" }, "ssr"));
+                      if (_cMecg.pediatrici === "SI" || (!_cMecg.pediatrici && dExtra.pediatrico)) badges.push((0, _j)("span", { title: "Pazienti Pediatrici", style: { fontSize: "9px", fontWeight: "600", color: "#ec4899", border: "1px solid rgba(236,72,153,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "\u{1F37C}" }, "ped"));
+                      if (_cMecg.firma === "SI" || (!_cMecg.firma && dExtra.firmaDigitale)) badges.push((0, _j)("span", { title: "Firma Digitale", style: { fontSize: "9px", color: "#374151", border: "1px solid rgba(55,65,81,0.3)", borderRadius: "3px", padding: "1px 3px", marginLeft: "2px", display: "inline-flex", alignItems: "center" }, children: (0, _js)("svg", { width: "9", height: "9", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round", children: [(0, _j)("path", { d: "M12 20h9" }, "pa"), (0, _j)("path", { d: "M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" }, "pb")] }) }, "firma2"));
                       var ecgStartKey = "d" + dayIdx + "_s" + sessionIdx + "_ecg_start_" + d.key;
                       var ecgEndKey   = "d" + dayIdx + "_s" + sessionIdx + "_ecg_end_"   + d.key;
                       // Default orari from doctor DB or ECG type
@@ -24825,8 +25402,8 @@ body {
                       })();
                       return flatRow([
                         { content: renderDocWithNote(_docTip((0, _js)("span", { style: { fontWeight: "500", fontSize: "11px" }, children: [(0, _j)("div", { children: formatShortName(d.name) }), (0, _j)("div", { style: { display: "flex", flexWrap: "wrap", gap: "2px" }, children: badges })] }), d.key, cardiologi), "d" + dayIdx + "_" + d.key, formatShortName(d.name)) },
-                        { content: (0, _j)("input", { type: "time", value: ecgTimes[ecgStartKey] !== undefined ? ecgTimes[ecgStartKey] : _ecgDefStart, onChange: function(e) { var k = ecgStartKey; setEcgTimes(function(p) { var n = Object.assign({}, p); n[k] = e.target.value; return n; }); }, style: { width: "62px", height: "20px", fontSize: "10px", border: "1px solid rgba(0,0,0,0.15)", borderRadius: "4px", padding: "0 2px", background: "transparent", color: (ecgTimes[ecgStartKey] || _ecgDefStart) ? "#374151" : "rgba(0,0,0,0.3)" } }), style: { textAlign: "center" } },
-                        { content: (0, _j)("input", { type: "time", value: ecgTimes[ecgEndKey] !== undefined ? ecgTimes[ecgEndKey] : _ecgDefEnd, onChange: function(e) { var k = ecgEndKey; setEcgTimes(function(p) { var n = Object.assign({}, p); n[k] = e.target.value; return n; }); }, style: { width: "62px", height: "20px", fontSize: "10px", border: "1px solid rgba(0,0,0,0.15)", borderRadius: "4px", padding: "0 2px", background: "transparent", color: (ecgTimes[ecgEndKey] || _ecgDefEnd) ? "#374151" : "rgba(0,0,0,0.3)" } }), style: { textAlign: "center" } }
+                        { content: (0, _j)("input", { type: "time", value: ecgTimes[ecgStartKey] !== undefined ? ecgTimes[ecgStartKey] : _ecgDefStart, onChange: function(e) { var k = ecgStartKey; var v = e.target.value; window._holterLocalDirty = window._holterLocalDirty || {}; window._holterLocalDirty.ecg_times = window._holterLocalDirty.ecg_times || {}; window._holterLocalDirty.ecg_times[k] = v; setEcgTimes(function(p) { var n = Object.assign({}, p); n[k] = v; return n; }); }, style: { width: "62px", height: "20px", fontSize: "10px", border: "1px solid rgba(0,0,0,0.15)", borderRadius: "4px", padding: "0 2px", background: "transparent", color: (ecgTimes[ecgStartKey] || _ecgDefStart) ? "#374151" : "rgba(0,0,0,0.3)" } }), style: { textAlign: "center" } },
+                        { content: (0, _j)("input", { type: "time", value: ecgTimes[ecgEndKey] !== undefined ? ecgTimes[ecgEndKey] : _ecgDefEnd, onChange: function(e) { var k = ecgEndKey; var v = e.target.value; window._holterLocalDirty = window._holterLocalDirty || {}; window._holterLocalDirty.ecg_times = window._holterLocalDirty.ecg_times || {}; window._holterLocalDirty.ecg_times[k] = v; setEcgTimes(function(p) { var n = Object.assign({}, p); n[k] = v; return n; }); }, style: { width: "62px", height: "20px", fontSize: "10px", border: "1px solid rgba(0,0,0,0.15)", borderRadius: "4px", padding: "0 2px", background: "transparent", color: (ecgTimes[ecgEndKey] || _ecgDefEnd) ? "#374151" : "rgba(0,0,0,0.3)" } }), style: { textAlign: "center" } }
                       ], "e_" + i, {}, i);
                     }),
                     "Nessun medico ECG",
@@ -24850,9 +25427,9 @@ body {
                         var dExtraHt = (vercelData.doctorExtra || {})[d.key] || {};
                         var _cMht = _matchCardiologo(d.key, cardiologi) || {};
                         var htBadges = [];
-                        if (_cMht.ssr === "SI" || (!_cMht.ssr && dExtraHt.ssr)) htBadges.push((0, _j)("span", { key: "ssr", title: "Convenzione SSR", style: { fontSize: "9px", fontWeight: "600", color: "#6366f1", border: "1px solid rgba(99,102,241,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "SSR" }));
-                        if (_cMht.pediatrici === "SI" || (!_cMht.pediatrici && dExtraHt.pediatrico)) htBadges.push((0, _j)("span", { key: "ped", title: "Pazienti Pediatrici", style: { fontSize: "9px", fontWeight: "600", color: "#ec4899", border: "1px solid rgba(236,72,153,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "\u{1F37C}" }));
-                        if (_cMht.firma === "SI" || (!_cMht.firma && dExtraHt.firmaDigitale)) htBadges.push((0, _j)("span", { key: "firma", title: "Firma Digitale", style: { fontSize: "9px", color: "#374151", border: "1px solid rgba(55,65,81,0.3)", borderRadius: "3px", padding: "1px 3px", marginLeft: "2px", display: "inline-flex", alignItems: "center" }, children: (0, _js)("svg", { width: "9", height: "9", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round", children: [(0, _j)("path", { key: "pa", d: "M12 20h9" }), (0, _j)("path", { key: "pb", d: "M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" })] }) }));
+                        if (_cMht.ssr === "SI" || (!_cMht.ssr && dExtraHt.ssr)) htBadges.push((0, _j)("span", { title: "Convenzione SSR", style: { fontSize: "9px", fontWeight: "600", color: "#6366f1", border: "1px solid rgba(99,102,241,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "SSR" }, "ssr"));
+                        if (_cMht.pediatrici === "SI" || (!_cMht.pediatrici && dExtraHt.pediatrico)) htBadges.push((0, _j)("span", { title: "Pazienti Pediatrici", style: { fontSize: "9px", fontWeight: "600", color: "#ec4899", border: "1px solid rgba(236,72,153,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "\u{1F37C}" }, "ped"));
+                        if (_cMht.firma === "SI" || (!_cMht.firma && dExtraHt.firmaDigitale)) htBadges.push((0, _j)("span", { title: "Firma Digitale", style: { fontSize: "9px", color: "#374151", border: "1px solid rgba(55,65,81,0.3)", borderRadius: "3px", padding: "1px 3px", marginLeft: "2px", display: "inline-flex", alignItems: "center" }, children: (0, _js)("svg", { width: "9", height: "9", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round", children: [(0, _j)("path", { d: "M12 20h9" }, "pa"), (0, _j)("path", { d: "M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" }, "pb")] }) }, "firma"));
                         var enteredHtHc = hcCounts[htHcKey];
                         var enteredHtHp = hpCounts[htHpKey];
                         var htHcDone = enteredHtHc !== undefined && enteredHtHc !== "" && parseInt(enteredHtHc) >= 10;
@@ -24873,9 +25450,9 @@ body {
                           var _cMsun = _matchCardiologo(d.key, cardiologi) || {};
                           var dExtraSun = (vercelData.doctorExtra || {})[d.key] || {};
                           var sunBadges = [];
-                          if (_cMsun.ssr === "SI" || (!_cMsun.ssr && dExtraSun.ssr)) sunBadges.push((0, _j)("span", { key: "ssr", title: "Convenzione SSR", style: { fontSize: "9px", fontWeight: "600", color: "#6366f1", border: "1px solid rgba(99,102,241,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "SSR" }));
-                          if (_cMsun.pediatrici === "SI" || (!_cMsun.pediatrici && dExtraSun.pediatrico)) sunBadges.push((0, _j)("span", { key: "ped", title: "Pazienti Pediatrici", style: { fontSize: "9px", fontWeight: "600", color: "#ec4899", border: "1px solid rgba(236,72,153,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "\u{1F37C}" }));
-                          if (_cMsun.firma === "SI" || (!_cMsun.firma && dExtraSun.firmaDigitale)) sunBadges.push((0, _j)("span", { key: "firma", title: "Firma Digitale", style: { fontSize: "9px", color: "#374151", border: "1px solid rgba(55,65,81,0.3)", borderRadius: "3px", padding: "1px 3px", marginLeft: "2px", display: "inline-flex", alignItems: "center" }, children: (0, _js)("svg", { width: "9", height: "9", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round", children: [(0, _j)("path", { key: "pa", d: "M12 20h9" }), (0, _j)("path", { key: "pb", d: "M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" })] }) }));
+                          if (_cMsun.ssr === "SI" || (!_cMsun.ssr && dExtraSun.ssr)) sunBadges.push((0, _j)("span", { title: "Convenzione SSR", style: { fontSize: "9px", fontWeight: "600", color: "#6366f1", border: "1px solid rgba(99,102,241,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "SSR" }, "ssr"));
+                          if (_cMsun.pediatrici === "SI" || (!_cMsun.pediatrici && dExtraSun.pediatrico)) sunBadges.push((0, _j)("span", { title: "Pazienti Pediatrici", style: { fontSize: "9px", fontWeight: "600", color: "#ec4899", border: "1px solid rgba(236,72,153,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "\u{1F37C}" }, "ped"));
+                          if (_cMsun.firma === "SI" || (!_cMsun.firma && dExtraSun.firmaDigitale)) sunBadges.push((0, _j)("span", { title: "Firma Digitale", style: { fontSize: "9px", color: "#374151", border: "1px solid rgba(55,65,81,0.3)", borderRadius: "3px", padding: "1px 3px", marginLeft: "2px", display: "inline-flex", alignItems: "center" }, children: (0, _js)("svg", { width: "9", height: "9", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round", children: [(0, _j)("path", { d: "M12 20h9" }, "pa"), (0, _j)("path", { d: "M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" }, "pb")] }) }, "firma"));
                           var sunHcKey = "d6_ht_hc_" + d.key;
                           var sunHpKey = "d6_ht_hp_" + d.key;
                           var enteredSunHc = hcCounts[sunHcKey];
@@ -24926,9 +25503,9 @@ body {
                     var _cMX = _matchCardiologo(d.key, cardiologi) || {};
                     var dTypeX = (vercelData.doctorTypes || {})[d.key] || "";
                     var xBadges = [];
-                    if (_cMX.ssr === "SI" || (!_cMX.ssr && dExtraX.ssr)) xBadges.push((0, _j)("span", { key: "ssr", title: "Convenzione SSR", style: { fontSize: "9px", fontWeight: "600", color: "#6366f1", border: "1px solid rgba(99,102,241,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "SSR" }));
-                    if (_cMX.pediatrici === "SI" || (!_cMX.pediatrici && dExtraX.pediatrico)) xBadges.push((0, _j)("span", { key: "ped", title: "Pazienti Pediatrici", style: { fontSize: "9px", fontWeight: "600", color: "#ec4899", border: "1px solid rgba(236,72,153,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "\u{1F37C}" }));
-                    if (_cMX.firma === "SI" || (!_cMX.firma && dExtraX.firmaDigitale)) xBadges.push((0, _j)("span", { key: "firma", title: "Firma Digitale", style: { fontSize: "9px", color: "#374151", border: "1px solid rgba(55,65,81,0.3)", borderRadius: "3px", padding: "1px 3px", marginLeft: "2px", display: "inline-flex", alignItems: "center" }, children: (0, _js)("svg", { width: "9", height: "9", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round", children: [(0, _j)("path", { key: "pa", d: "M12 20h9" }), (0, _j)("path", { key: "pb", d: "M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" })] }) }));
+                    if (_cMX.ssr === "SI" || (!_cMX.ssr && dExtraX.ssr)) xBadges.push((0, _j)("span", { title: "Convenzione SSR", style: { fontSize: "9px", fontWeight: "600", color: "#6366f1", border: "1px solid rgba(99,102,241,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "SSR" }, "ssr"));
+                    if (_cMX.pediatrici === "SI" || (!_cMX.pediatrici && dExtraX.pediatrico)) xBadges.push((0, _j)("span", { title: "Pazienti Pediatrici", style: { fontSize: "9px", fontWeight: "600", color: "#ec4899", border: "1px solid rgba(236,72,153,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "\u{1F37C}" }, "ped"));
+                    if (_cMX.firma === "SI" || (!_cMX.firma && dExtraX.firmaDigitale)) xBadges.push((0, _j)("span", { title: "Firma Digitale", style: { fontSize: "9px", color: "#374151", border: "1px solid rgba(55,65,81,0.3)", borderRadius: "3px", padding: "1px 3px", marginLeft: "2px", display: "inline-flex", alignItems: "center" }, children: (0, _js)("svg", { width: "9", height: "9", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round", children: [(0, _j)("path", { d: "M12 20h9" }, "pa"), (0, _j)("path", { d: "M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" }, "pb")] }) }, "firma"));
                     return flatRow([
                       { content: renderDocWithNote(_docTip(xBadges.length > 0 ? (0, _js)("span", { style: { fontWeight: "500", fontSize: "12px", color: entered === "." ? "#e53e3e" : (isComplete ? "#38a169" : "inherit"), textDecoration: entered === "." ? "line-through" : "none" }, children: [(0, _j)("div", { children: formatShortName(d.name) }), (0, _j)("div", { style: { display: "flex", flexWrap: "wrap", gap: "2px" }, children: xBadges })] }) : (0, _j)("span", { style: { fontWeight: "500", fontSize: "12px", color: entered === "." ? "#e53e3e" : (isComplete ? "#38a169" : "inherit"), textDecoration: entered === "." ? "line-through" : "none" }, children: formatShortName(d.name) }), d.key, cardiologi), "d" + dayIdx + "_" + d.key, formatShortName(d.name)) },
                       { content: renderCountCell(hcCounts, setHcCounts, key, d.max, "#e53e3e", "hc") }
@@ -24975,9 +25552,9 @@ body {
                     var _cMX = _matchCardiologo(d.key, cardiologi) || {};
                     var dTypeX = (vercelData.doctorTypes || {})[d.key] || "";
                     var xBadges = [];
-                    if (_cMX.ssr === "SI" || (!_cMX.ssr && dExtraX.ssr)) xBadges.push((0, _j)("span", { key: "ssr", title: "Convenzione SSR", style: { fontSize: "9px", fontWeight: "600", color: "#6366f1", border: "1px solid rgba(99,102,241,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "SSR" }));
-                    if (_cMX.pediatrici === "SI" || (!_cMX.pediatrici && dExtraX.pediatrico)) xBadges.push((0, _j)("span", { key: "ped", title: "Pazienti Pediatrici", style: { fontSize: "9px", fontWeight: "600", color: "#ec4899", border: "1px solid rgba(236,72,153,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "\u{1F37C}" }));
-                    if (_cMX.firma === "SI" || (!_cMX.firma && dExtraX.firmaDigitale)) xBadges.push((0, _j)("span", { key: "firma", title: "Firma Digitale", style: { fontSize: "9px", color: "#374151", border: "1px solid rgba(55,65,81,0.3)", borderRadius: "3px", padding: "1px 3px", marginLeft: "2px", display: "inline-flex", alignItems: "center" }, children: (0, _js)("svg", { width: "9", height: "9", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round", children: [(0, _j)("path", { key: "pa", d: "M12 20h9" }), (0, _j)("path", { key: "pb", d: "M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" })] }) }));
+                    if (_cMX.ssr === "SI" || (!_cMX.ssr && dExtraX.ssr)) xBadges.push((0, _j)("span", { title: "Convenzione SSR", style: { fontSize: "9px", fontWeight: "600", color: "#6366f1", border: "1px solid rgba(99,102,241,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "SSR" }, "ssr"));
+                    if (_cMX.pediatrici === "SI" || (!_cMX.pediatrici && dExtraX.pediatrico)) xBadges.push((0, _j)("span", { title: "Pazienti Pediatrici", style: { fontSize: "9px", fontWeight: "600", color: "#ec4899", border: "1px solid rgba(236,72,153,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "\u{1F37C}" }, "ped"));
+                    if (_cMX.firma === "SI" || (!_cMX.firma && dExtraX.firmaDigitale)) xBadges.push((0, _j)("span", { title: "Firma Digitale", style: { fontSize: "9px", color: "#374151", border: "1px solid rgba(55,65,81,0.3)", borderRadius: "3px", padding: "1px 3px", marginLeft: "2px", display: "inline-flex", alignItems: "center" }, children: (0, _js)("svg", { width: "9", height: "9", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round", children: [(0, _j)("path", { d: "M12 20h9" }, "pa"), (0, _j)("path", { d: "M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" }, "pb")] }) }, "firma"));
                     return flatRow([
                       { content: renderDocWithNote(_docTip(xBadges.length > 0 ? (0, _js)("span", { style: { fontWeight: "500", fontSize: "12px", color: entered === "." ? "#e53e3e" : (isComplete ? "#38a169" : "inherit"), textDecoration: entered === "." ? "line-through" : "none" }, children: [(0, _j)("div", { children: formatShortName(d.name) }), (0, _j)("div", { style: { display: "flex", flexWrap: "wrap", gap: "2px" }, children: xBadges })] }) : (0, _j)("span", { style: { fontWeight: "500", fontSize: "12px", color: entered === "." ? "#e53e3e" : (isComplete ? "#38a169" : "inherit"), textDecoration: entered === "." ? "line-through" : "none" }, children: formatShortName(d.name) }), d.key, cardiologi), "d" + dayIdx + "_" + d.key, formatShortName(d.name)) },
                       { content: renderCountCell(hpCounts, setHpCounts, key, d.max, "#38a169", "hp") }
@@ -25025,9 +25602,9 @@ body {
                     var _cMX = _matchCardiologo(d.key, cardiologi) || {};
                     var dTypeX = (vercelData.doctorTypes || {})[d.key] || "";
                     var xBadges = [];
-                    if (_cMX.ssr === "SI" || (!_cMX.ssr && dExtraX.ssr)) xBadges.push((0, _j)("span", { key: "ssr", title: "Convenzione SSR", style: { fontSize: "9px", fontWeight: "600", color: "#6366f1", border: "1px solid rgba(99,102,241,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "SSR" }));
-                    if (_cMX.pediatrici === "SI" || (!_cMX.pediatrici && dExtraX.pediatrico)) xBadges.push((0, _j)("span", { key: "ped", title: "Pazienti Pediatrici", style: { fontSize: "9px", fontWeight: "600", color: "#ec4899", border: "1px solid rgba(236,72,153,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "\u{1F37C}" }));
-                    if (_cMX.firma === "SI" || (!_cMX.firma && dExtraX.firmaDigitale)) xBadges.push((0, _j)("span", { key: "firma", title: "Firma Digitale", style: { fontSize: "9px", color: "#374151", border: "1px solid rgba(55,65,81,0.3)", borderRadius: "3px", padding: "1px 3px", marginLeft: "2px", display: "inline-flex", alignItems: "center" }, children: (0, _js)("svg", { width: "9", height: "9", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round", children: [(0, _j)("path", { key: "pa", d: "M12 20h9" }), (0, _j)("path", { key: "pb", d: "M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" })] }) }));
+                    if (_cMX.ssr === "SI" || (!_cMX.ssr && dExtraX.ssr)) xBadges.push((0, _j)("span", { title: "Convenzione SSR", style: { fontSize: "9px", fontWeight: "600", color: "#6366f1", border: "1px solid rgba(99,102,241,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "SSR" }, "ssr"));
+                    if (_cMX.pediatrici === "SI" || (!_cMX.pediatrici && dExtraX.pediatrico)) xBadges.push((0, _j)("span", { title: "Pazienti Pediatrici", style: { fontSize: "9px", fontWeight: "600", color: "#ec4899", border: "1px solid rgba(236,72,153,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "\u{1F37C}" }, "ped"));
+                    if (_cMX.firma === "SI" || (!_cMX.firma && dExtraX.firmaDigitale)) xBadges.push((0, _j)("span", { title: "Firma Digitale", style: { fontSize: "9px", color: "#374151", border: "1px solid rgba(55,65,81,0.3)", borderRadius: "3px", padding: "1px 3px", marginLeft: "2px", display: "inline-flex", alignItems: "center" }, children: (0, _js)("svg", { width: "9", height: "9", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round", children: [(0, _j)("path", { d: "M12 20h9" }, "pa"), (0, _j)("path", { d: "M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" }, "pb")] }) }, "firma"));
                     return flatRow([
                       { content: renderDocWithNote(_docTip(xBadges.length > 0 ? (0, _js)("span", { style: { fontWeight: "500", fontSize: "11px", color: entered === "." ? "#e53e3e" : (isComplete ? "#0891b2" : "inherit"), textDecoration: entered === "." ? "line-through" : "none" }, children: [(0, _j)("div", { children: formatShortName(d.name) }), (0, _j)("div", { style: { display: "flex", flexWrap: "wrap", gap: "2px" }, children: xBadges })] }) : (0, _j)("span", { style: { fontWeight: "500", fontSize: "11px", color: entered === "." ? "#e53e3e" : (isComplete ? "#0891b2" : "inherit"), textDecoration: entered === "." ? "line-through" : "none" }, children: formatShortName(d.name) }), d.key, cardiologi), "d" + dayIdx + "_" + d.key, formatShortName(d.name)) },
                       { content: renderCountCell(spiroCounts, setSpiroCounts, key, spMax, "#0891b2", "spiro") }
@@ -25075,9 +25652,9 @@ body {
                     var _cMX = _matchCardiologo(d.key, cardiologi) || {};
                     var dTypeX = (vercelData.doctorTypes || {})[d.key] || "";
                     var xBadges = [];
-                    if (_cMX.ssr === "SI" || (!_cMX.ssr && dExtraX.ssr)) xBadges.push((0, _j)("span", { key: "ssr", title: "Convenzione SSR", style: { fontSize: "9px", fontWeight: "600", color: "#6366f1", border: "1px solid rgba(99,102,241,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "SSR" }));
-                    if (_cMX.pediatrici === "SI" || (!_cMX.pediatrici && dExtraX.pediatrico)) xBadges.push((0, _j)("span", { key: "ped", title: "Pazienti Pediatrici", style: { fontSize: "9px", fontWeight: "600", color: "#ec4899", border: "1px solid rgba(236,72,153,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "\u{1F37C}" }));
-                    if (_cMX.firma === "SI" || (!_cMX.firma && dExtraX.firmaDigitale)) xBadges.push((0, _j)("span", { key: "firma", title: "Firma Digitale", style: { fontSize: "9px", color: "#374151", border: "1px solid rgba(55,65,81,0.3)", borderRadius: "3px", padding: "1px 3px", marginLeft: "2px", display: "inline-flex", alignItems: "center" }, children: (0, _js)("svg", { width: "9", height: "9", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round", children: [(0, _j)("path", { key: "pa", d: "M12 20h9" }), (0, _j)("path", { key: "pb", d: "M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" })] }) }));
+                    if (_cMX.ssr === "SI" || (!_cMX.ssr && dExtraX.ssr)) xBadges.push((0, _j)("span", { title: "Convenzione SSR", style: { fontSize: "9px", fontWeight: "600", color: "#6366f1", border: "1px solid rgba(99,102,241,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "SSR" }, "ssr"));
+                    if (_cMX.pediatrici === "SI" || (!_cMX.pediatrici && dExtraX.pediatrico)) xBadges.push((0, _j)("span", { title: "Pazienti Pediatrici", style: { fontSize: "9px", fontWeight: "600", color: "#ec4899", border: "1px solid rgba(236,72,153,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "\u{1F37C}" }, "ped"));
+                    if (_cMX.firma === "SI" || (!_cMX.firma && dExtraX.firmaDigitale)) xBadges.push((0, _j)("span", { title: "Firma Digitale", style: { fontSize: "9px", color: "#374151", border: "1px solid rgba(55,65,81,0.3)", borderRadius: "3px", padding: "1px 3px", marginLeft: "2px", display: "inline-flex", alignItems: "center" }, children: (0, _js)("svg", { width: "9", height: "9", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round", children: [(0, _j)("path", { d: "M12 20h9" }, "pa"), (0, _j)("path", { d: "M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" }, "pb")] }) }, "firma"));
                     return flatRow([
                       { content: renderDocWithNote(_docTip(xBadges.length > 0 ? (0, _js)("span", { style: { fontWeight: "500", fontSize: "11px", color: entered === "." ? "#e53e3e" : (isComplete ? "#7c3aed" : "inherit"), textDecoration: entered === "." ? "line-through" : "none" }, children: [(0, _j)("div", { children: formatShortName(d.name) }), (0, _j)("div", { style: { display: "flex", flexWrap: "wrap", gap: "2px" }, children: xBadges })] }) : (0, _j)("span", { style: { fontWeight: "500", fontSize: "11px", color: entered === "." ? "#e53e3e" : (isComplete ? "#7c3aed" : "inherit"), textDecoration: entered === "." ? "line-through" : "none" }, children: formatShortName(d.name) }), d.key, cardiologi), "d" + dayIdx + "_" + d.key, formatShortName(d.name)) },
                       { content: renderCountCell(plsCounts, setPlsCounts, key, plMax, "#7c3aed", "pls") }
@@ -25254,11 +25831,9 @@ body {
     const [selectedGiorno, setSelectedGiorno] = (0, import_react6.useState)("");
     const [newDoctorsCount, setNewDoctorsCount] = (0, import_react6.useState)(0);
     const [adminLoggedIn, setAdminLoggedIn] = (0, import_react6.useState)(() => sessionStorage.getItem('_adm') === '1');
+    // Espone il setter globalmente così _applySession può attivarlo quando user.is_admin=true
+    (0, import_react6.useEffect)(function(){ window._setAdminLoggedIn = setAdminLoggedIn; return function(){ window._setAdminLoggedIn = null; }; }, [setAdminLoggedIn]);
     const _initAdmUser = sessionStorage.getItem('_admUser') || '';
-    const [showAdminLogin, setShowAdminLogin] = (0, import_react6.useState)(false);
-    const adminUserRef = (0, import_react6.useRef)('');
-    const adminPassRef = (0, import_react6.useRef)('');
-    const [adminErr, setAdminErr] = (0, import_react6.useState)('');
     const [admSettings, setAdmSettings] = (0, import_react6.useState)(false);
     const [admList, setAdmList] = (0, import_react6.useState)([]); const [admDefPw, setAdmDefPw] = (0, import_react6.useState)('123456');
     const [newAdmUser, setNewAdmUser] = (0, import_react6.useState)('');
@@ -25427,17 +26002,6 @@ body {
     function handleSelectDay(giorno) {
       setSelectedGiorno(giorno);
     }
-    function doAdminLogin() {
-      var extras = admList;
-      var defPw = admDefPw; var all = [{u:'a.marino',p:defPw}].concat(extras);
-      if (all.some(function(c){ return c.u === adminUserRef.current.trim() && c.p === adminPassRef.current; })) {
-        sessionStorage.setItem('_adm','1');
-        sessionStorage.setItem('_admUser', adminUserRef.current.trim());
-        setLoggedAdminUser(adminUserRef.current.trim());
-        setAdminLoggedIn(true); setShowAdminLogin(false);
-        adminUserRef.current = ''; adminPassRef.current = ''; setAdminErr('');
-      } else { setAdminErr('Credenziali non valide'); }
-    }
     function doAdminLogout() {
       sessionStorage.removeItem('_adm');
       setAdminLoggedIn(false);
@@ -25603,61 +26167,10 @@ body {
             ]
           })
         ] }),
-        adminLoggedIn ? /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: { display: "flex", alignItems: "center", gap: "4px", marginLeft: "8px", flexShrink: 0 }, children: [
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { style: { fontSize: "9px", fontWeight: "700", color: "#7c3aed", background: "rgba(124,58,237,0.08)", border: "1px solid rgba(124,58,237,0.25)", borderRadius: "4px", padding: "2px 6px", letterSpacing: "0.5px" }, children: "ADMIN" }),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("button", { style: { fontSize: "9px", color: "rgba(0,0,0,0.35)", background: "transparent", border: "none", cursor: "pointer", padding: "2px 4px", borderRadius: "3px" }, onClick: doAdminLogout, title: "Esci da admin", children: "\u2715" })
-        ] }) : /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("button", { style: { width: "12px", height: "12px", opacity: 0, border: "none", background: "transparent", cursor: "default", flexShrink: 0, padding: 0 }, onClick: () => setShowAdminLogin(true), tabIndex: -1 })
+        
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "flex-1 overflow-y-auto", children: [
         /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { padding: "20px 24px", display: activeTab === "holter" ? "flex" : "none", justifyContent: "center", alignItems: "flex-start", overflowX: "auto" }, children: /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { width: "fit-content", minWidth: "0", background: "rgba(255,255,255,0.92)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)", border: "1px solid rgba(255,255,255,0.6)", borderRadius: "18px", boxShadow: "0 1px 3px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.07)", overflow: "visible" }, children: /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(HolterView, { turni, cardiologi: data.cardiologists }) }) }),
-        activeTab === "impostazioni" && adminLoggedIn && /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { padding: "24px 20px", maxWidth: "520px", margin: "0 auto" }, children:
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "m-card", style: { padding: "0", overflow: "hidden" }, children: [
-            /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: { background: "linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)", padding: "20px 24px", color: "white" }, children: [
-              /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h3", { style: { fontWeight: "700", fontSize: "17px", marginBottom: "4px", letterSpacing: "-0.01em" }, children: "Gestione Admin" }),
-              /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { fontSize: "12px", opacity: 0.8 }, children: "Configurazione account e credenziali" })
-            ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: { padding: "20px 24px" }, children: [
-              /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "m-settings-section", style: { marginBottom: "20px", padding: "14px 16px", background: "rgba(99,102,241,0.03)", border: "1px solid rgba(99,102,241,0.1)", borderRadius: "12px" }, children: [
-                /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { fontSize: "10px", fontWeight: "700", color: "#6366f1", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: "10px" }, children: "\uD83D\uDC64 Admin predefinito" }),
-                /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: { display: "flex", alignItems: "center", gap: "10px", padding: "10px 14px", background: "white", borderRadius: "10px", border: "1px solid rgba(0,0,0,0.06)", boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }, children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { width: "32px", height: "32px", borderRadius: "10px", background: "linear-gradient(135deg, #6366f1, #8b5cf6)", display: "flex", alignItems: "center", justifyContent: "center", color: "white", fontSize: "14px", fontWeight: "700", flexShrink: 0 }, children: "A" }),
-                  /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { fontWeight: "600", fontSize: "13px", color: "#1e293b" }, children: "a.marino" }),
-                    /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { fontSize: "11px", color: "#94a3b8" }, children: "Account principale" })
-                  ] })
-                ] })
-              ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "m-settings-section", style: { marginBottom: "20px", padding: "14px 16px", background: "rgba(37,99,235,0.02)", border: "1px solid rgba(37,99,235,0.08)", borderRadius: "12px" }, children: [
-                /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { fontSize: "10px", fontWeight: "700", color: "#2563eb", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: "10px" }, children: "\uD83D\uDD11 Cambia la mia password" }),
-                /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { fontSize: "12px", color: "#64748b", marginBottom: "10px", fontWeight: "500" }, children: "Connesso come: " + (loggedAdminUser || _initAdmUser || "a.marino") }),
-                /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("input", { type: "password", className: "m-settings-input", placeholder: "Password attuale", value: myOldPw, onChange: function(e){ setMyOldPw(e.target.value); setMyPwMsg(''); }, style: { width: "100%", padding: "10px 14px", fontSize: "13px", border: "1.5px solid rgba(0,0,0,0.08)", borderRadius: "10px", outline: "none", boxSizing: "border-box", marginBottom: "8px", background: "white" } }),
-                /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("input", { type: "password", className: "m-settings-input", placeholder: "Nuova password", value: myNewPw, onChange: function(e){ setMyNewPw(e.target.value); setMyPwMsg(''); }, style: { width: "100%", padding: "10px 14px", fontSize: "13px", border: "1.5px solid rgba(0,0,0,0.08)", borderRadius: "10px", outline: "none", boxSizing: "border-box", marginBottom: "10px", background: "white" } }),
-                /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("button", { className: "m-btn", style: { width: "100%", padding: "10px", background: "linear-gradient(135deg, #2563eb, #3b82f6)", color: "white", border: "none", borderRadius: "10px", fontWeight: "600", fontSize: "13px", cursor: "pointer" }, onClick: changeMyPassword, children: "Aggiorna password" }),
-                myPwMsg && /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { marginTop: "10px", fontSize: "12px", color: myPwMsg.startsWith("\u2705") ? "#16a34a" : "#ef4444", textAlign: "center", fontWeight: "500" }, children: myPwMsg })
-              ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "m-settings-section", style: { marginBottom: "20px", padding: "14px 16px", border: "1px solid rgba(0,0,0,0.06)", borderRadius: "12px" }, children: [
-                /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { fontSize: "10px", fontWeight: "700", color: "#64748b", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: "10px" }, children: "\uD83D\uDC65 Admin aggiuntivi" }),
-                admList.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { fontSize: "12px", color: "rgba(0,0,0,0.3)", padding: "16px", textAlign: "center", background: "rgba(0,0,0,0.015)", borderRadius: "10px" }, children: "Nessun admin aggiuntivo" })
-                : admList.map(function(a,i){ return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { key: i, style: { display: "flex", alignItems: "center", gap: "10px", padding: "10px 14px", borderRadius: "10px", background: "white", border: "1px solid rgba(0,0,0,0.06)", marginBottom: "8px", fontSize: "13px", boxShadow: "0 1px 2px rgba(0,0,0,0.03)" }, children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { width: "28px", height: "28px", borderRadius: "8px", background: "linear-gradient(135deg, #94a3b8, #64748b)", display: "flex", alignItems: "center", justifyContent: "center", color: "white", fontSize: "12px", fontWeight: "700", flexShrink: 0 }, children: (a.u||"?")[0].toUpperCase() }),
-                  /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { style: { flex: 1, fontWeight: "600", color: "#1e293b" }, children: a.u }),
-                  /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("button", { className: "m-btn", style: { fontSize: "10px", padding: "5px 10px", border: "1px solid rgba(0,0,0,0.08)", borderRadius: "8px", background: "white", cursor: "pointer", color: "#475569", fontWeight: "500" }, onClick: function(){ var np=prompt("Nuova password per "+a.u); if(np) changeAdminPass(i,np); }, children: "Cambia pwd" }),
-                  /* @__PURE__  */ (0, import_jsx_runtime6.jsx)("button", { className: "m-btn", style: { fontSize: "10px", padding: "5px 10px", border: "1px solid rgba(239,68,68,0.2)", borderRadius: "8px", background: "rgba(239,68,68,0.04)", cursor: "pointer", color: "#ef4444", fontWeight: "500" }, onClick: function(){ if(confirm("Rimuovere "+a.u+"?")) removeAdmin(i); }, children: "\u2715" })
-                ] }); })
-              ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: { padding: "14px 16px", background: "rgba(0,0,0,0.015)", borderRadius: "12px", border: "1px dashed rgba(0,0,0,0.1)" }, children: [
-                /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { fontSize: "10px", fontWeight: "700", color: "#64748b", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: "10px" }, children: "\u2795 Aggiungi admin" }),
-                /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: { display: "flex", flexDirection: "column", gap: "8px" }, children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: { display: "flex", gap: "8px" }, children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("input", { type: "text", className: "m-settings-input", placeholder: "Username", value: newAdmUser, onChange: function(e){setNewAdmUser(e.target.value);}, style: { flex: 1, padding: "10px 14px", fontSize: "13px", border: "1.5px solid rgba(0,0,0,0.08)", borderRadius: "10px", outline: "none", background: "white", minWidth: 0 } }),
-                    /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("input", { type: "password", className: "m-settings-input", placeholder: "Password", value: newAdmPass, onChange: function(e){setNewAdmPass(e.target.value);}, style: { flex: 1, padding: "10px 14px", fontSize: "13px", border: "1.5px solid rgba(0,0,0,0.08)", borderRadius: "10px", outline: "none", background: "white", minWidth: 0 } })
-                  ] }),
-                  /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("button", { className: "m-btn", style: { width: "100%", padding: "10px 16px", background: "linear-gradient(135deg, #6366f1, #8b5cf6)", color: "white", border: "none", borderRadius: "10px", fontWeight: "600", fontSize: "13px", cursor: "pointer" }, onClick: addAdmin, children: "+ Aggiungi Admin" })
-                ] })
-              ] })
-            ] })
-          ] })
-        }),
         activeTab === "impostazioni" && adminLoggedIn && /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { padding: "24px 20px", maxWidth: "600px", margin: "0 auto" }, children:
           /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: { background: "white", borderRadius: "16px", border: "1px solid rgba(0,0,0,0.06)", boxShadow: "0 2px 12px rgba(0,0,0,0.06)", overflow: "hidden" }, children: [
             /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: { background: "linear-gradient(135deg, #dc2626 0%, #ef4444 100%)", padding: "20px 24px", color: "white" }, children: [
@@ -25905,22 +26418,6 @@ body {
         ] })
       }),
 
-      showAdminLogin && /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center" }, onClick: function(e){ if(e.target===e.currentTarget){ setShowAdminLogin(false); setAdminErr(''); } }, children:
-        /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "m-card", style: { padding: "0", width: "320px", overflow: "hidden" }, children: [
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: { background: "linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)", padding: "24px", textAlign: "center", color: "white" }, children: [
-            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { fontSize: "32px", marginBottom: "6px" }, children: "\uD83D\uDD12" }),
-            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h3", { style: { fontWeight: "700", fontSize: "17px", letterSpacing: "-0.01em" }, children: "Area Admin" }),
-            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { fontSize: "12px", opacity: 0.75, marginTop: "2px" }, children: "Inserisci le tue credenziali" })
-          ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: { padding: "24px" }, children: [
-            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("input", { type: "text", className: "m-settings-input", placeholder: "Username", autoComplete: "off", style: { width: "100%", marginBottom: "10px", padding: "11px 14px", fontSize: "14px", border: "1.5px solid rgba(0,0,0,0.08)", borderRadius: "10px", outline: "none", boxSizing: "border-box", background: "rgba(0,0,0,0.015)" }, defaultValue: "", onChange: function(e){ adminUserRef.current = e.target.value; setAdminErr(''); } }),
-            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("input", { type: "password", className: "m-settings-input", placeholder: "Password", style: { width: "100%", marginBottom: "10px", padding: "11px 14px", fontSize: "14px", border: "1.5px solid rgba(0,0,0,0.08)", borderRadius: "10px", outline: "none", boxSizing: "border-box", background: "rgba(0,0,0,0.015)" }, defaultValue: "", onChange: function(e){ adminPassRef.current = e.target.value; setAdminErr(''); }, onKeyDown: function(e){ if(e.key==="Enter") doAdminLogin(); } }),
-            adminErr ? /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("p", { style: { color: "#ef4444", fontSize: "12px", marginBottom: "10px", textAlign: "center", fontWeight: "500" }, children: adminErr }) : /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { height: "22px", marginBottom: "10px" } }),
-            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("button", { className: "m-btn", style: { width: "100%", padding: "11px", background: "linear-gradient(135deg, #6366f1, #8b5cf6)", color: "white", border: "none", borderRadius: "10px", fontWeight: "600", fontSize: "14px", cursor: "pointer", marginBottom: "8px" }, onClick: doAdminLogin, children: "Accedi" }),
-            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("button", { style: { width: "100%", padding: "10px", background: "transparent", color: "rgba(0,0,0,0.4)", border: "1.5px solid rgba(0,0,0,0.06)", borderRadius: "10px", fontSize: "13px", cursor: "pointer" }, onClick: function(){ setShowAdminLogin(false); setAdminErr(''); }, children: "Annulla" })
-          ] })
-        ] })
-      })
     ] });
   };
   (0, import_client.createRoot)(document.getElementById("root")).render(/* @__PURE__ */ (0, import_jsx_runtime6.jsx)(App, {}));
@@ -26274,5 +26771,905 @@ lucide-react/dist/esm/lucide-react.js:
   };
 })();
   </script>
-  </body>
+  
+<!-- ██████████ AUTH SYSTEM v8 ██████████ -->
+<div id="_auth_overlay">
+  <div id="_auth_card">
+
+    <!-- Brand strip -->
+    <div id="_auth_brand">
+      <div id="_auth_logo_wrap"><img src="https://www.medeatelemedicina.com/wp-content/uploads/2024/06/Logo-MedEA-Telemedicina.svg" alt="MedEA Telemedicina" onerror="this.style.display='none';document.getElementById('_auth_logo_fallback').style.display='flex'"/></div>
+      <div id="_auth_logo_fallback" style="display:none;align-items:center;gap:10px;font-size:20px;font-weight:800;color:#1a6640;letter-spacing:-0.03em">
+        <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="15" fill="#2a7d50"/><path d="M10 16h12M16 10v12" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/></svg>
+        MedEA Telemedicina
+      </div>
+      <div id="_auth_brand_sub">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.593c-5.63-5.539-11-10.297-11-14.402 0-3.791 3.068-5.191 5.281-5.191 1.312 0 4.151.501 5.719 4.457 1.59-3.968 4.464-4.447 5.726-4.447 2.54 0 5.274 1.621 5.274 5.181 0 4.069-5.136 8.625-11 14.402z"/></svg>
+        Situazione Medici
+      </div>
+    </div>
+
+    <!-- Form -->
+    <div id="_auth_box">
+      <h2>Bentornato</h2>
+      <p>Inserisci le tue credenziali per accedere</p>
+
+      <label class="_auth_label" for="_auth_user">Username</label>
+      <div class="_auth_input_wrap">
+        <span class="_auth_input_icon">👤</span>
+        <input class="_auth_input" id="_auth_user" type="text" autocomplete="username" placeholder="nome.cognome"/>
+      </div>
+
+      <label class="_auth_label" for="_auth_pass">Password</label>
+      <div class="_auth_input_wrap">
+        <span class="_auth_input_icon">🔒</span>
+        <input class="_auth_input" id="_auth_pass" type="password" autocomplete="current-password" placeholder="••••••••"/>
+      </div>
+
+      <div id="_auth_err"></div>
+      <button id="_auth_btn" onclick="_doLogin()">Accedi</button>
+      <div id="_auth_footer_note">MedEA Telemedicina © 2025</div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ── Cambio Password Modal ── -->
+<div id="_chgpw_modal" class="_modal_overlay hidden">
+  <div class="_modal_box">
+    <h3>🔑 Cambia Password</h3>
+    <p class="sub">Modifica la tua password di accesso</p>
+    <label class="_auth_label">Password attuale</label>
+    <input class="_auth_input" id="_chg_old" type="password" placeholder="••••••••"/>
+    <label class="_auth_label">Nuova password</label>
+    <input class="_auth_input" id="_chg_new1" type="password" placeholder="••••••••"/>
+    <label class="_auth_label">Ripeti nuova password</label>
+    <input class="_auth_input" id="_chg_new2" type="password" placeholder="••••••••"/>
+    <div id="_chg_err" class="_modal_err"></div>
+    <div id="_chg_ok" class="_modal_ok"></div>
+    <div style="display:flex;gap:8px;margin-top:18px;justify-content:flex-end;">
+      <button class="_modal_btn sec" onclick="_closeChgPw()">Annulla</button>
+      <button class="_modal_btn" onclick="_submitChgPw()">Salva</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Gestione Utenti Modal (solo admin) ── -->
+<div id="_users_modal" class="_modal_overlay hidden">
+  <div class="_modal_box" style="width:520px;">
+    <h3>👥 Gestione Utenti</h3>
+    <p class="sub">Aggiungi, rimuovi o modifica i ruoli degli utenti</p>
+    <div id="_users_list"></div>
+    <!-- Aggiungi utente -->
+    <div class="_add_user_form">
+      <h4>➕ Nuovo Utente</h4>
+      <div class="_row2">
+        <div>
+          <label class="_auth_label">Username</label>
+          <input class="_auth_input" id="_nu_user" placeholder="nome.cognome"/>
+        </div>
+        <div>
+          <label class="_auth_label">Nome visualizzato</label>
+          <input class="_auth_input" id="_nu_disp" placeholder="Nome Cognome"/>
+        </div>
+      </div>
+      <label class="_auth_label" style="margin-top:10px;">Password iniziale</label>
+      <input class="_auth_input" id="_nu_pass" type="password" placeholder="••••••••"/>
+      <div style="display:flex;align-items:center;gap:8px;margin-top:10px;">
+        <input type="checkbox" id="_nu_admin" style="width:16px;height:16px;cursor:pointer;"/>
+        <label for="_nu_admin" style="font-size:13px;color:#374151;cursor:pointer;">Ruolo Admin</label>
+      </div>
+      <div id="_nu_err" class="_modal_err"></div>
+      <div style="display:flex;justify-content:flex-end;margin-top:12px;">
+        <button class="_modal_btn" onclick="_addUser()">Crea Utente</button>
+      </div>
+    </div>
+    <div style="display:flex;justify-content:flex-end;margin-top:16px;">
+      <button class="_modal_btn sec" onclick="_closeUsersModal()">Chiudi</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  // ── Supabase REST helpers (usa client già inizializzato) ─────────────
+  async function sbGet(table, filter) {
+    var url = window._SB_URL + '/rest/v1/' + table + (filter ? '?' + filter : '');
+    var r = await fetch(url, { headers: { apikey: window._SB_KEY, Authorization: 'Bearer ' + window._SB_KEY, 'Content-Type': 'application/json' } });
+    return r.json();
+  }
+  async function sbInsert(table, body) {
+    var url = window._SB_URL + '/rest/v1/' + table;
+    return fetch(url, { method:'POST', headers: { apikey: window._SB_KEY, Authorization: 'Bearer ' + window._SB_KEY, 'Content-Type': 'application/json', Prefer:'return=representation' }, body: JSON.stringify(body) });
+  }
+  async function sbUpdate(table, filter, body) {
+    var url = window._SB_URL + '/rest/v1/' + table + '?' + filter;
+    return fetch(url, { method:'PATCH', headers: { apikey: window._SB_KEY, Authorization: 'Bearer ' + window._SB_KEY, 'Content-Type': 'application/json', Prefer:'return=representation' }, body: JSON.stringify(body) });
+  }
+  async function sbDelete(table, filter) {
+    var url = window._SB_URL + '/rest/v1/' + table + '?' + filter;
+    return fetch(url, { method:'DELETE', headers: { apikey: window._SB_KEY, Authorization: 'Bearer ' + window._SB_KEY, 'Content-Type': 'application/json' } });
+  }
+
+  // ── SHA-256 via SubtleCrypto ────────────────────────────────────────
+  async function sha256(str) {
+    var buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+    return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+  }
+
+  // ── Esponi Supabase URL/KEY dalla config già caricata ───────────────
+  function initKeys() {
+    try {
+      // Prendi dalla variabile globale già inizializzata
+      if (typeof SUPABASE_URL !== 'undefined') {
+        window._SB_URL = SUPABASE_URL;
+        window._SB_KEY = SUPABASE_ANON_KEY;
+      } else {
+        // fallback: leggi da script tags
+        document.querySelectorAll('script').forEach(function(s){
+          var m = s.textContent.match(/SUPABASE_URL\s*=\s*'([^']+)'/);
+          if(m) window._SB_URL = m[1];
+          var k = s.textContent.match(/SUPABASE_ANON_KEY\s*=\s*'([^']+)'/);
+          if(k) window._SB_KEY = k[1];
+        });
+      }
+    } catch(e){}
+  }
+
+  // ── Controlla sessione al caricamento ───────────────────────────────
+  window.addEventListener('DOMContentLoaded', function() {
+    initKeys();
+    var sess = null;
+    try { sess = JSON.parse(localStorage.getItem('_authUser')); } catch(e){}
+    if (sess && sess.id) {
+      var msg = document.getElementById('_auth_autologin_msg');
+      if(msg) { msg.style.display='block'; }
+      setTimeout(function(){ _applySession(sess); }, 600);
+    }
+    // Enter su campi login
+    ['_auth_user','_auth_pass'].forEach(function(id) {
+      var el = document.getElementById(id);
+      if(el) el.addEventListener('keydown', function(e){ if(e.key==='Enter') _doLogin(); });
+    });
+  });
+
+  // ── Login ──────────────────────────────────────────────────────────
+  window._doLogin = async function() {
+    var btn = document.getElementById('_auth_btn');
+    var errEl = document.getElementById('_auth_err');
+    var username = document.getElementById('_auth_user').value.trim().toLowerCase();
+    var password = document.getElementById('_auth_pass').value;
+    if (!username || !password) { errEl.textContent = 'Inserisci username e password.'; return; }
+    btn.disabled = true; btn.textContent = 'Verifica…'; errEl.textContent = '';
+    try {
+      initKeys();
+      var hash = await sha256(password + ':' + username);
+      var rows = await sbGet('app_users', 'username=eq.' + encodeURIComponent(username) + '&is_active=eq.true');
+      if (!Array.isArray(rows) || rows.length === 0) { errEl.textContent = 'Utente non trovato o disabilitato.'; return; }
+      var user = rows[0];
+      if (user.password_hash !== hash) { errEl.textContent = 'Password non corretta.'; return; }
+      localStorage.setItem('_authUser', JSON.stringify(user));
+      _applySession(user);
+    } catch(e) {
+      errEl.textContent = 'Errore di connessione: ' + e.message;
+    } finally {
+      btn.disabled = false; btn.textContent = 'Accedi';
+    }
+  };
+
+  // ── Applica sessione (nascondi overlay, mostra badge) ──────────────
+  function _applySession(user) {
+    window._authUser = user;
+    document.getElementById('_auth_overlay').classList.add('hidden');
+    _patchSaveFunctions(user);
+    _injectBadge(user);
+    // Se l'utente è admin nel sistema Supabase, attiva anche il flag di admin React
+    if (user.is_admin) {
+      sessionStorage.setItem('_adm', '1');
+      sessionStorage.setItem('_admUser', user.display_name || user.username);
+      if (window._setAdminLoggedIn) window._setAdminLoggedIn(true);
+    }
+  }
+
+  // ── Patch funzioni di salvataggio per edit_log ─────────────────────
+  function _patchSaveFunctions(user) {
+    var logEntry = async function(tableName, desc) {
+      try {
+        await sbInsert('edit_log', {
+          user_id: user.id,
+          username: user.username,
+          display_name: user.display_name,
+          table_name: tableName,
+          description: desc
+        });
+      } catch(e){ console.warn('edit_log error', e); }
+    };
+
+    // ── Helper: nome leggibile medico ──
+    function _docLabel(c) {
+      if (!c) return '?';
+      if (c.surname) return (c.titolo ? c.titolo + ' ' : '') + c.surname + (c.firstname ? ' ' + c.firstname : '');
+      return c.name || '?';
+    }
+
+    // ── Helper: etichetta campo turno ──
+    var _FIELD_LABEL = {
+      mattina: 'Mattina', pomeriggio: 'Pomeriggio',
+      hc: 'HC', hp: 'HP', spiro: 'Spiro', polisonno: 'Polisonno'
+    };
+
+    // ── Helper: etichetta campo cardiologo ──
+    var _CARD_FIELD_LABEL = {
+      surname:'Cognome', firstname:'Nome', titolo:'Titolo', orario:'Orario',
+      ssr:'SSR', firma:'Firma Digitale', virtuale:'Virtuale',
+      pediatrici:'Pediatrici', medea_clinic:'MedEA Clinic',
+      turno_completo:'Turno Completo', ecg100:'ECG 100', ecg75:'ECG 75',
+      turno_solo_ecg:'Solo ECG', turno_holter:'Turno Holter', turno_solo_hc:'Solo HC',
+      hc_consuntivo:'HC Consuntivo', hp_consuntivo:'HP Consuntivo',
+      spiro_consuntivo:'Spirometria', polisonno_consuntivo:'Polisonnografia',
+      derivazioni_12:'12 Derivazioni', max_hc:'Max HC', max_hp:'Max HP',
+      max_pls:'Max PLS', attivo:'Stato', annotazioni:'Annotazioni',
+      diari_clinici:'Diari Clinici'
+    };
+
+    if (window._fbSaveTurni) {
+      var _orig1 = window._fbSaveTurni;
+      window._fbSaveTurni = async function(updated) {
+        // Confronta con base pre-salvataggio per rilevare modifiche dettagliate
+        var base = window._turniBase || [];
+        var fields = ['mattina','pomeriggio','hc','hp','spiro','polisonno'];
+        var changes = [];
+        updated.forEach(function(t) {
+          var old = base.find(function(b){ return b.giorno === t.giorno; }) || {};
+          fields.forEach(function(f) {
+            var ov = old[f] || ''; var nv = t[f] || '';
+            if (ov !== nv) {
+              var lbl = _FIELD_LABEL[f] || f;
+              var from = ov ? ('da "' + ov + '"') : '';
+              var to   = nv ? ('"' + nv + '"') : '(vuoto)';
+              changes.push(t.giorno + ' › ' + lbl + ': ' + (from ? from + ' → ' : '') + to);
+            }
+          });
+        });
+        var desc = changes.length
+          ? 'Turni – ' + changes.join(' | ')
+          : 'Turni – nessuna variazione rilevata';
+        var r = await _orig1(updated);
+        logEntry('turni', desc);
+        return r;
+      };
+    }
+
+    if (window._fbSaveCardiologists) {
+      var _orig2 = window._fbSaveCardiologists;
+      window._fbSaveCardiologists = async function(updated) {
+        var base = window._cardsBase || [];
+        var changes = [];
+        // Nuovi o modificati
+        updated.forEach(function(c) {
+          var old = base.find(function(b){ return b.key === c.key || b.name === c.name; });
+          if (!old) {
+            changes.push('Aggiunto: ' + _docLabel(c));
+          } else {
+            var modFields = [];
+            Object.keys(_CARD_FIELD_LABEL).forEach(function(f) {
+              var ov = old[f]; var nv = c[f];
+              if (JSON.stringify(ov) !== JSON.stringify(nv)) {
+                modFields.push(_CARD_FIELD_LABEL[f]);
+              }
+            });
+            if (modFields.length) {
+              changes.push(_docLabel(c) + ': ' + modFields.join(', '));
+            }
+          }
+        });
+        // Eliminati
+        base.forEach(function(b) {
+          var found = updated.find(function(c){ return c.key === b.key || c.name === b.name; });
+          if (!found) changes.push('Rimosso: ' + _docLabel(b));
+        });
+        var desc = changes.length
+          ? 'Medici – ' + changes.join(' | ')
+          : 'Medici – nessuna variazione rilevata';
+        var r = await _orig2(updated);
+        logEntry('cardiologists', desc);
+        return r;
+      };
+    }
+
+    if (window._fbSaveHolterCounts) {
+      var _orig3 = window._fbSaveHolterCounts;
+      window._fbSaveHolterCounts = function() {
+        var args = arguments;
+        var weekKey  = args[0];
+        var hc       = args[1] || {};
+        var hp       = args[2] || {};
+        var spiro    = args[3] || {};
+        var pls      = args[4] || {};
+        // Usa dirty per individuare esattamente cosa è cambiato
+        var dirty = window._holterLocalDirty || {};
+        var parts = [];
+        var _addDirtyParts = function(map, label) {
+          if (!map || !Object.keys(map).length) return;
+          Object.keys(map).forEach(function(docKey) {
+            // Cerca nome leggibile nei cardiologi
+            var cardiologi = window._cardsBase || [];
+            var c = cardiologi.find(function(x){ return (x.key||x.name||'') === docKey; });
+            var docName = c ? _docLabel(c) : docKey;
+            var val = map[docKey];
+            parts.push(label + ' ' + docName + '→' + (val !== undefined && val !== null ? val : '?'));
+          });
+        };
+        _addDirtyParts(dirty.hc,  'HC');
+        _addDirtyParts(dirty.hp,  'HP');
+        _addDirtyParts(dirty.spiro,'Spiro');
+        _addDirtyParts(dirty.pls, 'PLS');
+        _addDirtyParts(dirty.ecg_times, 'ECG');
+        _addDirtyParts(dirty.extra_hc, '+HC');
+        _addDirtyParts(dirty.extra_hp, '+HP');
+        _addDirtyParts(dirty.extra_sp, '+Spiro');
+        _addDirtyParts(dirty.extra_pl, '+PLS');
+        _addDirtyParts(dirty.disp_overrides, 'Disp');
+        var week = weekKey || '?';
+        var desc = parts.length
+          ? 'Holter sett. ' + week + ' – ' + parts.join(', ')
+          : 'Holter sett. ' + week + ' – aggiornamento conteggi';
+        var r = _orig3.apply(window, args);
+        if (r && typeof r.then === 'function') {
+          r.then(function(){ logEntry('holter_counts', desc); });
+        } else {
+          logEntry('holter_counts', desc);
+        }
+        return r;
+      };
+    }
+  }
+
+  // ── Badge utente in navbar ─────────────────────────────────────────
+  function _injectBadge(user) {
+    if (document.getElementById('_user_badge')) return;
+    var initials = (user.display_name || user.username).split(' ').map(function(w){return w[0]||'';}).join('').substring(0,2).toUpperCase();
+    var adminPill = user.is_admin ? '<span class="_admin_pill">ADMIN</span>' : '';
+    var badge = document.createElement('div');
+    badge.id = '_user_badge';
+    badge.innerHTML = '<div class="_av">' + initials + '</div><span>' + (user.display_name || user.username) + '</span>' + adminPill;
+    badge.title = 'Account';
+    // Menu
+    var menu = document.createElement('div');
+    menu.id = '_badge_menu';
+    var menuHtml = '<button onclick="_openChgPw()">🔑 Cambia password</button>';
+    if (user.is_admin) menuHtml += '<button onclick="_openUsersModal()">👥 Gestione utenti</button>';
+    if (user.is_admin) menuHtml += '<button onclick="_openAuditLog()">📋 Registro modifiche</button>';
+    menuHtml += '<button class="danger" onclick="_doLogout()">🚪 Esci</button>';
+    menu.innerHTML = menuHtml;
+    badge.appendChild(menu);
+    badge.addEventListener('click', function(e){
+      e.stopPropagation();
+      menu.classList.toggle('open');
+    });
+    document.addEventListener('click', function(){ menu.classList.remove('open'); });
+
+    // Inserisci nel navbar: cerca il nav o header
+    var interval = setInterval(function(){
+      // Cerca il container dei tab (di solito il primo header/nav)
+      var nav = document.querySelector('nav') || document.querySelector('header') || document.querySelector('[class*="nav"]') || document.querySelector('[class*="header"]');
+      if (!nav) {
+        // Cerca il primo div con stile flex in alto
+        var allDivs = document.querySelectorAll('div');
+        for (var i=0;i<allDivs.length;i++){
+          var style = window.getComputedStyle(allDivs[i]);
+          var rect = allDivs[i].getBoundingClientRect();
+          if (style.display==='flex' && rect.top < 80 && rect.height > 30 && rect.height < 90 && rect.width > 200) {
+            nav = allDivs[i]; break;
+          }
+        }
+      }
+      if (nav) {
+        clearInterval(interval);
+        nav.style.position = 'relative';
+        nav.appendChild(badge);
+        // ── Presence indicator ──────────────────────────────────
+        if (!document.getElementById('_presence_indicator')) {
+          var presEl = document.createElement('div');
+          presEl.id = '_presence_indicator';
+          presEl.innerHTML =
+            '<span id="_pres_dot"></span>' +
+            '<span id="_pres_count">1</span>' +
+            '<div id="_pres_tooltip">' +
+              '<div class="_pres_tt_title">Online ora</div>' +
+              '<div id="_pres_names"></div>' +
+            '</div>';
+          nav.appendChild(presEl);
+          _initPresence(user, presEl);
+        }
+      }
+    }, 300);
+  }
+
+  // ── Logout ─────────────────────────────────────────────────────────
+  window._doLogout = function() {
+    localStorage.removeItem('_authUser');
+    window._authUser = null;
+    document.getElementById('_auth_overlay').classList.remove('hidden');
+    var b = document.getElementById('_user_badge');
+    if(b) b.remove();
+    // Clean up presence
+    if (window._presChannel) {
+      try { window._sb.removeChannel(window._presChannel); } catch(e){}
+      window._presChannel = null;
+    }
+    var pi = document.getElementById('_presence_indicator');
+    if(pi) pi.remove();
+  };
+
+  // ── Presence channel ────────────────────────────────────────────────
+  function _initPresence(user, presEl) {
+    if (!window._sb) return;
+    var key = String(user.id || user.username || Math.random());
+    var ch = window._sb.channel('app_presence', {
+      config: { presence: { key: key } }
+    });
+    function _renderPresence() {
+      var state = ch.presenceState();
+      var allUsers = Object.values(state).flat();
+      // Deduplication: same user on multiple browsers counts only once
+      var seen = {};
+      var users = allUsers.filter(function(u) {
+        var k = (u.username || u.display_name || '?').toLowerCase();
+        if (seen[k]) return false;
+        seen[k] = true;
+        return true;
+      });
+      var countEl = document.getElementById('_pres_count');
+      var namesEl = document.getElementById('_pres_names');
+      if (countEl) countEl.textContent = users.length;
+      if (namesEl) {
+        namesEl.innerHTML = users.map(function(u) {
+          var dn = u.display_name || u.username || '?';
+          var init = dn.split(' ').map(function(w){return w[0]||'';}).join('').substring(0,2).toUpperCase();
+          return '<div class="_pres_user"><div class="_pres_av">' + init + '</div><span>' + dn + '</span></div>';
+        }).join('');
+      }
+    }
+    ch.on('presence', { event: 'sync' }, _renderPresence);
+    ch.subscribe(function(status) {
+      if (status === 'SUBSCRIBED') {
+        ch.track({
+          username: user.username,
+          display_name: user.display_name || user.username,
+          joined_at: new Date().toISOString()
+        });
+      }
+    });
+    window._presChannel = ch;
+  }
+
+  // ── Registro Modifiche ──────────────────────────────────────────────
+  window._auditAllRows = [];
+  window._openAuditLog = function() {
+    document.getElementById('_badge_menu').classList.remove('open');
+    document.getElementById('_audit_modal').classList.remove('hidden');
+    document.getElementById('_audit_filter').value = '';
+    _loadAuditLog();
+  };
+  window._closeAuditLog = function() {
+    document.getElementById('_audit_modal').classList.add('hidden');
+  };
+  window._loadAuditLog = async function() {
+    var body = document.getElementById('_audit_body');
+    body.innerHTML = '<div class="_audit_empty">Caricamento...</div>';
+    try {
+      var url = window._SB_URL + '/rest/v1/edit_log?order=changed_at.desc&limit=200';
+      var r = await fetch(url, { headers: {
+        apikey: window._SB_KEY,
+        Authorization: 'Bearer ' + window._SB_KEY
+      }});
+      var rows = await r.json();
+      if (!Array.isArray(rows)) throw new Error('Risposta non valida');
+      window._auditAllRows = rows;
+      _renderAuditLog(rows);
+    } catch(e) {
+      body.innerHTML = '<div class="_audit_empty">⚠️ Errore nel caricamento: ' + (e.message||e) + '</div>';
+    }
+  };
+  window._filterAuditLog = function(q) {
+    if (!q) { _renderAuditLog(window._auditAllRows); return; }
+    var lq = q.toLowerCase();
+    var filtered = (window._auditAllRows || []).filter(function(r) {
+      return (r.display_name||'').toLowerCase().includes(lq) ||
+             (r.username||'').toLowerCase().includes(lq) ||
+             (r.description||'').toLowerCase().includes(lq) ||
+             (r.table_name||'').toLowerCase().includes(lq);
+    });
+    _renderAuditLog(filtered);
+  };
+  // ── Helper: escape HTML ────────────────────────────────────────────
+  function _escHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  // ── Helper: pulizia chiavi interne tipo "d2_s0_tc_GOLINO P" ────────
+  function _cleanDocKey(k) {
+    if (!k) return k;
+    return k.replace(/^(?:[a-z]\d+_[a-z]\d+_[a-z]+_)+/i, '').trim();
+  }
+
+  // ── Helper: YYYY-MM-DD → DD/MM ─────────────────────────────────────
+  function _fmtDate(d) {
+    var m = (d||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    return m ? m[3]+'/'+m[2]+'/'+m[1] : d;
+  }
+  function _fmtDateShort(d) {
+    var m = (d||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    return m ? m[3]+'/'+m[2] : d;
+  }
+
+  // ── Render descrizione strutturata ─────────────────────────────────
+  function _parseAndRenderDesc(desc) {
+    if (!desc || desc === '—') return '<span class="_audit_desc_plain">—</span>';
+
+    var HOLTER_COLORS = {
+      'HC':    'background:#fef3c7;color:#92400e;border-color:#fde68a;',
+      'HP':    'background:#ede9fe;color:#5b21b6;border-color:#ddd6fe;',
+      'Spiro': 'background:#ecfdf5;color:#065f46;border-color:#a7f3d0;',
+      'PLS':   'background:#fff1f2;color:#9f1239;border-color:#fecdd3;',
+      'ECG':   'background:#f0f9ff;color:#0c4a6e;border-color:#bae6fd;',
+      '+HC':   'background:#fffbeb;color:#b45309;border-color:#fde68a;',
+      '+HP':   'background:#f5f3ff;color:#4c1d95;border-color:#ddd6fe;',
+      '+Spiro':'background:#f0fdf4;color:#166534;border-color:#bbf7d0;',
+      '+PLS':  'background:#fdf2f8;color:#9d174d;border-color:#fbcfe8;',
+      'Disp':  'background:#f8fafc;color:#475569;border-color:#e2e8f0;'
+    };
+
+    // ── HOLTER ───────────────────────────────────────────────────────
+    var hm = desc.match(/^Holter sett\.\s+(\S+)\s+[–\-]\s+(.+)$/);
+    if (hm) {
+      var week = hm[1];
+      var body = hm[2];
+      var weekDisp = _fmtDate(week);
+      if (body === 'aggiornamento conteggi') {
+        return '<span class="_audit_desc_plain">Settimana <b>'+_escHtml(weekDisp)+'</b> · aggiornamento conteggi</span>';
+      }
+      // Raggruppa le parti: ogni parte inizia con una label nota
+      var parts = [];
+      body.split(', ').forEach(function(seg) {
+        if (/^(\+?(?:HC|HP|Spiro|PLS|ECG|Disp))\s/i.test(seg) || parts.length === 0) {
+          parts.push(seg);
+        } else {
+          parts[parts.length-1] += ', ' + seg;
+        }
+      });
+      var chips = parts.map(function(part) {
+        var ai = part.lastIndexOf('→');
+        if (ai === -1) return '<span class="_ach_chip">'+_escHtml(part)+'</span>';
+        var left = part.substring(0, ai).trim();
+        var newVal = part.substring(ai+1).trim();
+        var lm = left.match(/^(\+?(?:HC|HP|Spiro|PLS|ECG|Disp))\s+(.*)/i);
+        var label = lm ? lm[1] : '';
+        var docName = _cleanDocKey(lm ? lm[2].trim() : left);
+        var st = (label && HOLTER_COLORS[label]) ? HOLTER_COLORS[label] : '';
+        return '<span class="_ach_chip" style="'+st+'">'
+          + (label ? '<b>'+_escHtml(label)+'</b> ' : '')
+          + _escHtml(docName)
+          + ' <span class="_ach_arrow">→</span> <span class="_ach_to">'+_escHtml(newVal)+'</span>'
+          + '</span>';
+      }).join('');
+      return '<div class="_audit_desc_hdr">Settimana <b>'+_escHtml(weekDisp)+'</b> &nbsp;·&nbsp; '
+        + parts.length+' variazion'+(parts.length===1?'e':'i')+'</div>'
+        + '<div class="_audit_changes">'+chips+'</div>';
+    }
+
+    // ── TURNI ────────────────────────────────────────────────────────
+    var tm = desc.match(/^Turni\s+[–\-]\s+(.+)$/);
+    if (tm) {
+      var body = tm[1];
+      if (body === 'nessuna variazione rilevata') {
+        return '<span class="_audit_desc_plain">Nessuna variazione rilevata</span>';
+      }
+      var changes = body.split(' | ');
+      var linesHtml = changes.map(function(part) {
+        var pm = part.match(/^(\S+)\s+[›>]\s+([^:]+):\s+(.+)$/);
+        if (!pm) return '<div class="_ach_line"><span class="_audit_desc_plain">'+_escHtml(part)+'</span></div>';
+        var date = _fmtDateShort(pm[1].trim());
+        var field = pm[2].trim();
+        var vp = pm[3].trim();
+        var ft = vp.match(/^da\s+"(.*)"\s+→\s+"(.*)"$/);
+        var to = !ft && vp.match(/^"(.*)"$/);
+        var fe = !ft && vp.match(/^da\s+"(.*)"\s+→\s+\(vuoto\)$/);
+        var fromHtml = '', toHtml = '';
+        if (ft) {
+          fromHtml = '<span class="_ach_from">'+_escHtml(ft[1])+'</span><span class="_ach_arrow"> → </span>';
+          toHtml   = '<span class="_ach_to">'+_escHtml(ft[2])+'</span>';
+        } else if (to) {
+          toHtml = '<span class="_ach_to">'+_escHtml(to[1])+'</span>';
+        } else if (fe) {
+          fromHtml = '<span class="_ach_from">'+_escHtml(fe[1])+'</span><span class="_ach_arrow"> → </span>';
+          toHtml   = '<span class="_ach_empty">(vuoto)</span>';
+        } else {
+          toHtml = '<span class="_ach_to">'+_escHtml(vp)+'</span>';
+        }
+        return '<div class="_ach_line">'
+          +'<span class="_ach_date">'+_escHtml(date)+'</span>'
+          +'<span class="_ach_field">'+_escHtml(field)+'</span>'
+          +fromHtml+toHtml
+          +'</div>';
+      }).join('');
+      return '<div class="_audit_desc_hdr">'+changes.length+' modifica'+(changes.length===1?'':'he')+'</div>'
+        +'<div class="_audit_changes_rows">'+linesHtml+'</div>';
+    }
+
+    // ── MEDICI ───────────────────────────────────────────────────────
+    var mm = desc.match(/^Medici\s+[–\-]\s+(.+)$/);
+    if (mm) {
+      var body = mm[1];
+      if (body === 'nessuna variazione rilevata') {
+        return '<span class="_audit_desc_plain">Nessuna variazione rilevata</span>';
+      }
+      var changes = body.split(' | ');
+      var linesHtml = changes.map(function(part) {
+        if (part.indexOf('Aggiunto: ') === 0)
+          return '<div class="_ach_line"><span class="_ach_badge add">+</span>'
+            +'<span class="_ach_added">'+_escHtml(part.substring(10))+'</span></div>';
+        if (part.indexOf('Rimosso: ') === 0)
+          return '<div class="_ach_line"><span class="_ach_badge rem">−</span>'
+            +'<span class="_ach_removed">'+_escHtml(part.substring(9))+'</span></div>';
+        var ci = part.indexOf(': ');
+        if (ci !== -1) {
+          var name = part.substring(0, ci);
+          var fields = part.substring(ci+2);
+          return '<div class="_ach_line"><span class="_ach_badge edit">✎</span>'
+            +'<span class="_ach_field">'+_escHtml(name)+'</span>'
+            +'<span class="_ach_arrow">·</span>'
+            +'<span class="_ach_fields_list">'+_escHtml(fields)+'</span></div>';
+        }
+        return '<div class="_ach_line"><span class="_audit_desc_plain">'+_escHtml(part)+'</span></div>';
+      }).join('');
+      return '<div class="_audit_changes_rows">'+linesHtml+'</div>';
+    }
+
+    // ── FALLBACK ─────────────────────────────────────────────────────
+    return '<span class="_audit_desc_plain">'+_escHtml(desc)+'</span>';
+  }
+
+  function _renderAuditLog(rows) {
+    var body = document.getElementById('_audit_body');
+    var countEl = document.getElementById('_audit_count_badge');
+    if (countEl) countEl.textContent = rows.length + ' modifich' + (rows.length === 1 ? 'a' : 'e');
+    // stats
+    var statsTotal = document.getElementById('_astat_total');
+    var statsToday = document.getElementById('_astat_today');
+    if (statsTotal) statsTotal.textContent = rows.length;
+    if (statsToday) {
+      var todayStr = new Date().toLocaleDateString('it-IT',{day:'2-digit',month:'2-digit',year:'numeric'});
+      var todayCnt = rows.filter(function(r){ return r.changed_at && new Date(r.changed_at).toLocaleDateString('it-IT',{day:'2-digit',month:'2-digit',year:'numeric'}) === todayStr; }).length;
+      statsToday.textContent = todayCnt;
+    }
+    if (!rows.length) {
+      body.innerHTML = '<div class="_audit_empty"><div class="_audit_empty_icon">📋</div><div class="_audit_empty_text">Nessuna modifica trovata</div><div class="_audit_empty_sub">Prova a cambiare i filtri di ricerca</div></div>';
+      return;
+    }
+    var TABLE_META = {
+      'turni':          { bg: '#eff6ff', color: '#1d4ed8', border:'#bfdbfe', label: 'Turni',   icon:'🗓️' },
+      'cardiologists':  { bg: '#f0fdf4', color: '#15803d', border:'#bbf7d0', label: 'Medici',  icon:'👨‍⚕️' },
+      'holter_counts':  { bg: '#fffbeb', color: '#b45309', border:'#fde68a', label: 'Holter',  icon:'💓' }
+    };
+    var AV_GRADIENTS = [
+      'linear-gradient(135deg,#6366f1,#8b5cf6)',
+      'linear-gradient(135deg,#0ea5e9,#6366f1)',
+      'linear-gradient(135deg,#10b981,#0ea5e9)',
+      'linear-gradient(135deg,#f59e0b,#ef4444)',
+      'linear-gradient(135deg,#ec4899,#8b5cf6)',
+      'linear-gradient(135deg,#14b8a6,#6366f1)'
+    ];
+    function strHash(s){ var h=0; for(var i=0;i<s.length;i++) h=(h*31+s.charCodeAt(i))|0; return Math.abs(h); }
+    function relTime(ts) {
+      if (!ts) return '';
+      var diff = (Date.now() - new Date(ts).getTime()) / 1000;
+      if (diff < 60) return 'Adesso';
+      if (diff < 3600) return Math.floor(diff/60) + ' min fa';
+      if (diff < 86400) return Math.floor(diff/3600) + ' ore fa';
+      if (diff < 172800) return 'Ieri';
+      return Math.floor(diff/86400) + ' gg fa';
+    }
+    function dayLabel(ts) {
+      if (!ts) return '—';
+      var d = new Date(ts);
+      var today = new Date(); today.setHours(0,0,0,0);
+      var yesterday = new Date(today); yesterday.setDate(yesterday.getDate()-1);
+      d.setHours(0,0,0,0);
+      if (d.getTime() === today.getTime()) return 'Oggi';
+      if (d.getTime() === yesterday.getTime()) return 'Ieri';
+      return new Date(ts).toLocaleDateString('it-IT',{weekday:'long',day:'2-digit',month:'long'});
+    }
+    // Group by day
+    var byDay = [];
+    var dayMap = {};
+    rows.forEach(function(r){
+      var d = r.changed_at ? new Date(r.changed_at).toDateString() : 'unknown';
+      if (!dayMap[d]) { dayMap[d] = []; byDay.push({key:d, ts:r.changed_at, items:dayMap[d]}); }
+      dayMap[d].push(r);
+    });
+    var html = byDay.map(function(group){
+      var sep = '<div class="_audit_day_sep">' + dayLabel(group.ts) + '</div>';
+      var rowsHtml = group.items.map(function(r){
+        var dn = r.display_name || r.username || '?';
+        var init = dn.split(' ').map(function(w){return w[0]||'';}).join('').substring(0,2).toUpperCase();
+        var grad = AV_GRADIENTS[strHash(dn) % AV_GRADIENTS.length];
+        var tc = TABLE_META[r.table_name] || { bg:'#f8fafc', color:'#475569', border:'#e2e8f0', label: r.table_name||'?', icon:'📝' };
+        var pill = '<span class="_audit_table_pill" style="background:'+tc.bg+';color:'+tc.color+';border:1px solid '+tc.border+';">'+tc.icon+' '+tc.label+'</span>';
+        var ts = r.changed_at ? new Date(r.changed_at) : null;
+        var timeStr = ts ? ts.toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'}) : '';
+        var rel = relTime(r.changed_at);
+        return '<div class="_audit_row">' +
+          '<div class="_audit_av" style="background:'+grad+'">'+init+'</div>' +
+          '<div class="_audit_info">' +
+            '<div class="_audit_top_row"><span class="_audit_user">'+dn+'</span>'+pill+'</div>' +
+            '<div class="_audit_desc_block">'+_parseAndRenderDesc(r.description)+'</div>' +
+          '</div>' +
+          '<div class="_audit_time">'+timeStr+'<span class="_audit_time_rel">'+rel+'</span></div>' +
+        '</div>';
+      }).join('');
+      return sep + rowsHtml;
+    }).join('');
+    body.innerHTML = html;
+  }
+
+  // ── Cambio Password ────────────────────────────────────────────────
+  window._openChgPw = function() {
+    document.getElementById('_chgpw_modal').classList.remove('hidden');
+    document.getElementById('_chg_old').value='';
+    document.getElementById('_chg_new1').value='';
+    document.getElementById('_chg_new2').value='';
+    document.getElementById('_chg_err').textContent='';
+    document.getElementById('_chg_ok').textContent='';
+    document.getElementById('_badge_menu').classList.remove('open');
+  };
+  window._closeChgPw = function() {
+    document.getElementById('_chgpw_modal').classList.add('hidden');
+  };
+  window._submitChgPw = async function() {
+    var oldPw = document.getElementById('_chg_old').value;
+    var new1  = document.getElementById('_chg_new1').value;
+    var new2  = document.getElementById('_chg_new2').value;
+    var errEl = document.getElementById('_chg_err');
+    var okEl  = document.getElementById('_chg_ok');
+    errEl.textContent=''; okEl.textContent='';
+    if(!oldPw||!new1||!new2){errEl.textContent='Compila tutti i campi.';return;}
+    if(new1!==new2){errEl.textContent='Le nuove password non coincidono.';return;}
+    if(new1.length<4){errEl.textContent='La nuova password è troppo corta (min 4 caratteri).';return;}
+    var user = window._authUser;
+    var oldHash = await sha256(oldPw + ':' + user.username);
+    if(oldHash !== user.password_hash){errEl.textContent='La password attuale non è corretta.';return;}
+    var newHash = await sha256(new1 + ':' + user.username);
+    try {
+      var r = await sbUpdate('app_users', 'id=eq.' + user.id, {password_hash: newHash});
+      if(!r.ok){errEl.textContent='Errore salvataggio: ' + r.status;return;}
+      user.password_hash = newHash;
+      localStorage.setItem('_authUser', JSON.stringify(user));
+      okEl.textContent='✅ Password aggiornata con successo!';
+      setTimeout(_closeChgPw, 1500);
+    } catch(e){errEl.textContent='Errore: '+e.message;}
+  };
+
+  // ── Gestione Utenti (solo admin) ───────────────────────────────────
+  window._openUsersModal = function() {
+    document.getElementById('_users_modal').classList.remove('hidden');
+    document.getElementById('_badge_menu').classList.remove('open');
+    _loadUsersList();
+  };
+  window._closeUsersModal = function() {
+    document.getElementById('_users_modal').classList.add('hidden');
+  };
+
+  async function _loadUsersList() {
+    var listEl = document.getElementById('_users_list');
+    listEl.innerHTML = '<div style="text-align:center;color:#8898aa;padding:12px;font-size:13px;">Caricamento…</div>';
+    try {
+      var rows = await sbGet('app_users', 'order=created_at.asc');
+      if(!Array.isArray(rows)||rows.length===0){listEl.innerHTML='<p style="color:#8898aa;font-size:13px;text-align:center;">Nessun utente trovato.</p>';return;}
+      listEl.innerHTML = rows.map(function(u){
+        var initials = (u.display_name||u.username).split(' ').map(function(w){return w[0]||'';}).join('').substring(0,2).toUpperCase();
+        var isMe = (window._authUser && u.id === window._authUser.id);
+        var adminBtn = u.is_admin
+          ? `<button class="_icon_btn dem" onclick="_setAdminRole('${u.id}',false)">▼ Rimuovi Admin</button>`
+          : `<button class="_icon_btn prom" onclick="_setAdminRole('${u.id}',true)">▲ Rendi Admin</button>`;
+        var delBtn = isMe ? '' : `<button class="_icon_btn del" onclick="_deleteUser('${u.id}','${u.display_name}')">🗑</button>`;
+        var meTag = isMe ? ' <span style="font-size:10px;background:#dbeafe;color:#1e40af;padding:1px 6px;border-radius:999px;font-weight:600;">Tu</span>' : '';
+        var activeBadge = u.is_active ? '' : ' <span style="font-size:10px;background:#fee2e2;color:#dc2626;padding:1px 6px;border-radius:999px;">Disabilitato</span>';
+        return '<div class="_ul_item'+(u.is_admin?' _admin_row':'')+'">'
+          +'<div class="_av">'+initials+'</div>'
+          +'<div style="flex:1;">'
+          +'<span class="_ul_name">'+u.display_name+meTag+'</span>'
+          +'<span class="_ul_sub">'+u.username+(u.is_admin?' · 🛡 Admin':'')+activeBadge+'</span>'
+          +'</div>'
+          +'<div class="_ul_actions">'
+          +(isMe ? '' : adminBtn)
+          +delBtn
+          +'</div></div>';
+      }).join('');
+    } catch(e){listEl.innerHTML='<p style="color:#e53e3e;">Errore: '+e.message+'</p>';}
+  }
+
+  window._setAdminRole = async function(uid, isAdmin) {
+    if(!window._authUser||!window._authUser.is_admin){alert('Non autorizzato.');return;}
+    await sbUpdate('app_users','id=eq.'+uid,{is_admin:isAdmin});
+    _loadUsersList();
+  };
+
+  window._deleteUser = async function(uid, name) {
+    if(!window._authUser||!window._authUser.is_admin){alert('Non autorizzato.');return;}
+    if(!confirm(`Eliminare definitivamente l'utente "${name}"?`))return;
+    await sbDelete('app_users','id=eq.'+uid);
+    _loadUsersList();
+  };
+
+  window._addUser = async function() {
+    if(!window._authUser||!window._authUser.is_admin){alert('Non autorizzato.');return;}
+    var username  = (document.getElementById('_nu_user').value||'').trim().toLowerCase();
+    var dispName  = (document.getElementById('_nu_disp').value||'').trim();
+    var password  = document.getElementById('_nu_pass').value;
+    var isAdmin   = document.getElementById('_nu_admin').checked;
+    var errEl     = document.getElementById('_nu_err');
+    errEl.textContent='';
+    if(!username||!dispName||!password){errEl.textContent='Compila tutti i campi.';return;}
+    if(password.length<4){errEl.textContent='Password troppo corta (min 4 caratteri).';return;}
+    var hash = await sha256(password + ':' + username);
+    try {
+      var r = await sbInsert('app_users',{username:username,display_name:dispName,password_hash:hash,is_admin:isAdmin,is_active:true});
+      if(!r.ok){var err=await r.json();errEl.textContent='Errore: '+(err.message||r.status);return;}
+      document.getElementById('_nu_user').value='';
+      document.getElementById('_nu_disp').value='';
+      document.getElementById('_nu_pass').value='';
+      document.getElementById('_nu_admin').checked=false;
+      _loadUsersList();
+    } catch(e){errEl.textContent='Errore: '+e.message;}
+  };
+
+})();
+</script>
+
+
+<!-- ── Registro Modifiche Modal (solo admin) ── -->
+<div id="_audit_modal" class="_modal_overlay hidden">
+  <div class="_modal_box">
+    <div id="_audit_header">
+      <div style="display:flex;align-items:center;gap:12px;position:relative;z-index:1;">
+        <div style="width:42px;height:42px;border-radius:12px;background:rgba(255,255,255,0.15);display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0;">📋</div>
+        <div style="flex:1;">
+          <h3>Registro Modifiche</h3>
+          <p>Storico completo delle azioni effettuate dagli utenti</p>
+        </div>
+        <button onclick="_closeAuditLog()" style="background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.18);color:white;width:32px;height:32px;border-radius:8px;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:background 0.15s;" onmouseover="this.style.background='rgba(255,255,255,0.22)'" onmouseout="this.style.background='rgba(255,255,255,0.12)'">✕</button>
+      </div>
+      <div id="_audit_stats">
+        <div class="_astat">
+          <span class="_astat_n" id="_astat_total">—</span>
+          <span class="_astat_l">Totale</span>
+        </div>
+        <div class="_astat">
+          <span class="_astat_n" id="_astat_today">—</span>
+          <span class="_astat_l">Oggi</span>
+        </div>
+      </div>
+    </div>
+    <div id="_audit_toolbar">
+      <div id="_audit_search_wrap">
+        <input id="_audit_filter" type="text" placeholder="Cerca per utente, azione o tabella..." oninput="_filterAuditLog(this.value)"/>
+      </div>
+      <span id="_audit_count" class="hidden"></span><span id="_audit_count_badge"></span>
+      <button class="_modal_btn" style="font-size:12px;padding:7px 14px;white-space:nowrap;flex-shrink:0;" onclick="_loadAuditLog()">↻ Aggiorna</button>
+    </div>
+    <div id="_audit_body">
+      <div class="_audit_empty"><div class="_audit_empty_icon">⏳</div><div class="_audit_empty_text">Caricamento...</div></div>
+    </div>
+    <div id="_audit_footer">
+      <span id="_audit_footer_note">Ultimi 200 record • ordinati dal più recente</span>
+      <button class="_modal_btn sec" onclick="_closeAuditLog()">Chiudi</button>
+    </div>
+  </div>
+</div>
+
+</body>
 </html>
