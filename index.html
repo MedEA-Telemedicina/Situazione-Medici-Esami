@@ -691,30 +691,107 @@ body {
       } catch(e) { console.error('Supabase loadData error:', e); throw e; }
     };
 
-    window._fbSaveTurni = async function(updated) {
-      try {
-        // Leggi lo stato attuale del DB prima di scrivere (3-way merge)
-        var r = await _sb.from('kv_store').select('data').eq('id', 'turni_medici/turni').maybeSingle();
-        var dbLista = (r.data && r.data.data && r.data.data.lista) ? r.data.data.lista : updated;
-        var merged = _mergeArraysThreeWay(window._turniBase, updated, dbLista);
-        var { error } = await _sb.from('kv_store')
-          .upsert({ id: 'turni_medici/turni', data: { lista: merged, _sid: window._sessionId }, updated_at: new Date().toISOString() });
-        if (error) throw error;
-        window._turniBase = JSON.parse(JSON.stringify(merged)); // aggiorna la base dopo il salvataggio
-      } catch(e) { console.error('Supabase saveTurni error:', e); throw e; }
+    // ── Salvataggio con Optimistic Concurrency Control ──────────────────────
+    // Usa updated_at come lock ottimistico: la scrittura condizionale riesce
+    // SOLO se il record non è stato modificato da un altro client nel frattempo.
+    // In caso di conflitto, rilegge il DB e riprova il merge (max 6 tentativi,
+    // backoff esponenziale + jitter) — nessuna modifica viene persa.
+    //
+    // Coda locale (_turniSaveQueue / _cardsSaveQueue) per serializzare eventuali
+    // save concorrenti dallo stesso tab (es. due campi modificati quasi insieme).
+
+    async function _doSaveTurni(updated, retry) {
+      var r = await _sb.from('kv_store').select('data, updated_at').eq('id', 'turni_medici/turni').maybeSingle();
+      var row = r.data;
+      var dbLista = (row && row.data && row.data.lista) ? row.data.lista : updated;
+      var dbTs    = row ? row.updated_at : null;
+      var merged  = _mergeArraysThreeWay(window._turniBase, updated, dbLista);
+      var newTs   = new Date().toISOString();
+      var newData = { lista: merged, _sid: window._sessionId };
+      var written = false;
+
+      if (!dbTs) {
+        // Prima scrittura: upsert senza condizioni
+        var ins = await _sb.from('kv_store').upsert({ id: 'turni_medici/turni', data: newData, updated_at: newTs });
+        if (ins.error) throw ins.error;
+        written = true;
+      } else {
+        // Scrittura condizionale: aggiorna SOLO se updated_at coincide
+        var upd = await _sb.from('kv_store')
+          .update({ data: newData, updated_at: newTs })
+          .eq('id', 'turni_medici/turni')
+          .eq('updated_at', dbTs)
+          .select('id');
+        if (upd.error) throw upd.error;
+        written = !!(upd.data && upd.data.length > 0);
+      }
+
+      if (!written) {
+        // Conflitto: un altro client ha scritto prima di noi — riprova
+        if (retry < 6) {
+          var delay = Math.min(80 * Math.pow(1.8, retry) + Math.random() * 80, 2000);
+          await new Promise(function(res) { setTimeout(res, delay); });
+          return _doSaveTurni(updated, retry + 1);
+        }
+        console.error('[turni] save: max retries exceeded');
+        return;
+      }
+      window._turniBase = JSON.parse(JSON.stringify(merged));
+    }
+
+    window._fbSaveTurni = function(updated) {
+      // Serializza i save dallo stesso tab per evitare doppia-lettura locale
+      if (!window._turniSaveQueue) window._turniSaveQueue = Promise.resolve();
+      var q = window._turniSaveQueue.then(function() {
+        return _doSaveTurni(updated, 0);
+      });
+      window._turniSaveQueue = q.catch(function(e) { console.error('Supabase saveTurni error:', e); });
+      return q;
     };
 
-    window._fbSaveCardiologists = async function(updated) {
-      try {
-        // Leggi lo stato attuale del DB prima di scrivere (3-way merge)
-        var r = await _sb.from('kv_store').select('data').eq('id', 'turni_medici/cardiologists').maybeSingle();
-        var dbLista = (r.data && r.data.data && r.data.data.lista) ? r.data.data.lista : updated;
-        var merged = _mergeArraysThreeWay(window._cardsBase, updated, dbLista);
-        var { error } = await _sb.from('kv_store')
-          .upsert({ id: 'turni_medici/cardiologists', data: { lista: merged, _sid: window._sessionId }, updated_at: new Date().toISOString() });
-        if (error) throw error;
-        window._cardsBase = JSON.parse(JSON.stringify(merged)); // aggiorna la base dopo il salvataggio
-      } catch(e) { console.error('Supabase saveCardiologists error:', e); throw e; }
+    async function _doSaveCardiologists(updated, retry) {
+      var r = await _sb.from('kv_store').select('data, updated_at').eq('id', 'turni_medici/cardiologists').maybeSingle();
+      var row = r.data;
+      var dbLista = (row && row.data && row.data.lista) ? row.data.lista : updated;
+      var dbTs    = row ? row.updated_at : null;
+      var merged  = _mergeArraysThreeWay(window._cardsBase, updated, dbLista);
+      var newTs   = new Date().toISOString();
+      var newData = { lista: merged, _sid: window._sessionId };
+      var written = false;
+
+      if (!dbTs) {
+        var ins = await _sb.from('kv_store').upsert({ id: 'turni_medici/cardiologists', data: newData, updated_at: newTs });
+        if (ins.error) throw ins.error;
+        written = true;
+      } else {
+        var upd = await _sb.from('kv_store')
+          .update({ data: newData, updated_at: newTs })
+          .eq('id', 'turni_medici/cardiologists')
+          .eq('updated_at', dbTs)
+          .select('id');
+        if (upd.error) throw upd.error;
+        written = !!(upd.data && upd.data.length > 0);
+      }
+
+      if (!written) {
+        if (retry < 6) {
+          var delay = Math.min(80 * Math.pow(1.8, retry) + Math.random() * 80, 2000);
+          await new Promise(function(res) { setTimeout(res, delay); });
+          return _doSaveCardiologists(updated, retry + 1);
+        }
+        console.error('[cardiologists] save: max retries exceeded');
+        return;
+      }
+      window._cardsBase = JSON.parse(JSON.stringify(merged));
+    }
+
+    window._fbSaveCardiologists = function(updated) {
+      if (!window._cardsSaveQueue) window._cardsSaveQueue = Promise.resolve();
+      var q = window._cardsSaveQueue.then(function() {
+        return _doSaveCardiologists(updated, 0);
+      });
+      window._cardsSaveQueue = q.catch(function(e) { console.error('Supabase saveCardiologists error:', e); });
+      return q;
     };
 
     // ── Tracking note: salva l'ultimo valore note salvato per evitare
