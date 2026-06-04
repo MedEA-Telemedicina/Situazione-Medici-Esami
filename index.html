@@ -825,14 +825,25 @@ body {
       var dirtyExPl  = (_dirty.extra_pl  && Object.keys(_dirty.extra_pl).length)  ? _dirty.extra_pl  : {};
       var dirtyDisp  = (_dirty.disp_overrides && Object.keys(_dirty.disp_overrides).length) ? _dirty.disp_overrides : {};
 
+      // ── Snapshot delle chiavi inviate: al completamento rimuoveremo SOLO queste ──
+      var _sentKeys = {
+        hc: Object.keys(dirtyHc),
+        hp: Object.keys(dirtyHp),
+        spiro: Object.keys(dirtySpiro),
+        pls: Object.keys(dirtyPls),
+        ecg_times: Object.keys(dirtyEcg),
+        extra_hc: Object.keys(dirtyExHc),
+        extra_hp: Object.keys(dirtyExHp),
+        extra_sp: Object.keys(dirtyExSp),
+        extra_pl: Object.keys(dirtyExPl),
+        disp_overrides: Object.keys(dirtyDisp)
+      };
+
       // Per le note: invia solo se effettivamente cambiate rispetto all'ultimo save
       var notesChanged = (JSON.stringify(notes) !== JSON.stringify(window._lastSavedNotes));
       var notesParam   = notesChanged ? notes : null;
 
       // ── MERGE ATOMICO via Supabase RPC ──────────────────────────────────────
-      // La funzione PostgreSQL merge_holter_counts usa l'operatore || per fondere
-      // SOLO le chiavi inviate, senza toccare quelle degli altri utenti.
-      // Nessun read-modify-write, nessuna race condition, nessun retry necessario.
       var _wk = weekKey;
       return _sb.rpc('merge_holter_counts', {
         p_week_key:       _wk,
@@ -853,11 +864,17 @@ body {
         window._lastSavedUpdatedAt = newTs;
         if (notesChanged) window._lastSavedNotes = JSON.parse(JSON.stringify(notes));
 
+        // ── Rimozione selettiva delle sole chiavi inviate ─────────────────────
+        // NON azzera _holterLocalDirty! Rimuove solo le chiavi che sono state
+        // effettivamente salvate, preservando quelle aggiunte nel frattempo.
+        var cur = window._holterLocalDirty || {};
+        Object.keys(_sentKeys).forEach(function(section) {
+          if (cur[section] && _sentKeys[section].length) {
+            _sentKeys[section].forEach(function(k) { delete cur[section][k]; });
+          }
+        });
+
         // ── Post-save refresh ─────────────────────────────────────────────────
-        // Dopo che ignoreSnap si disattiva (~1200ms), fa un "touch" leggero sul DB
-        // per generare un evento realtime con lo stato completo di tutti gli utenti.
-        // Questo garantisce che il client si riallinei anche se ha perso snapshot
-        // durante la finestra di ignoreSnap.
         clearTimeout(window._holterPostSaveRefresh);
         window._holterPostSaveRefresh = setTimeout(function() {
           _sb.from('holter_counts')
@@ -24600,13 +24617,16 @@ body {
         savePromise.then(function() {
           // Riattiva la ricezione di snapshot solo se non c'è un altro save in coda
           try { localStorage.removeItem('holter_draft_' + weekKey); } catch(e) {}
-          window._holterLocalDirty = { hc: {}, hp: {}, spiro: {}, pls: {}, disp_overrides: {}, ecg_times: {}, extra_hc: {}, extra_hp: {}, extra_sp: {}, extra_pl: {} };
-          setTimeout(function() {
-            // Se nel frattempo l'utente ha digitato, saveTimer è già stato sostituito
-            // e ignoreSnap verrà gestito dal prossimo ciclo di save
-            if (!saveTimer.current) ignoreSnap.current = false;
-          }, 900); // allungato a 900 ms per coprire latenza Supabase realtime
+          // NB: NON azzeriamo _holterLocalDirty qui — la rimozione selettiva
+          // è già fatta dentro _fbSaveHolterCounts.then() per preservare
+          // le chiavi aggiunte dall'utente durante il save in volo.
+          // Salviamo il riferimento al timer corrente per confrontarlo dopo il delay
+          var _timerAtSave = saveTimer.current;
           saveTimer.current = null;
+          setTimeout(function() {
+            // Riattiva snapshot SOLO se nessun nuovo save è stato schedulato nel frattempo
+            if (!saveTimer.current && saveTimer.current === _timerAtSave) ignoreSnap.current = false;
+          }, 900);
         }).catch(function(err) { console.warn("Firestore save error:", err); ignoreSnap.current = false; saveTimer.current = null; });
       }, 300);
     }, [hcCounts, hpCounts, spiroCounts, plsCounts, doctorNotes, ecgTimes, extraHcDocs, extraHpDocs, extraSpDocs, extraPlDocs, dispOverrides, fsLoaded]);
@@ -24724,10 +24744,10 @@ body {
     var extraHpDocsDay = Array.isArray(extraHpDocs) ? [] : (extraHpDocs[_xDayKey] || []);
     var extraSpDocsDay = Array.isArray(extraSpDocs) ? [] : (extraSpDocs[_xDayKey] || []);
     var extraPlDocsDay = Array.isArray(extraPlDocs) ? [] : (extraPlDocs[_xDayKey] || []);
-    function setExtraHcDocsDay(updater) { setExtraHcDocs(function(prev) { var p = Array.isArray(prev) ? {} : prev; var c = p[_xDayKey] || []; var n = typeof updater === 'function' ? updater(c) : updater; var r = {}; for (var k in p) r[k] = p[k]; r[_xDayKey] = n; return r; }); }
-    function setExtraHpDocsDay(updater) { setExtraHpDocs(function(prev) { var p = Array.isArray(prev) ? {} : prev; var c = p[_xDayKey] || []; var n = typeof updater === 'function' ? updater(c) : updater; var r = {}; for (var k in p) r[k] = p[k]; r[_xDayKey] = n; return r; }); }
-    function setExtraSpDocsDay(updater) { setExtraSpDocs(function(prev) { var p = Array.isArray(prev) ? {} : prev; var c = p[_xDayKey] || []; var n = typeof updater === 'function' ? updater(c) : updater; var r = {}; for (var k in p) r[k] = p[k]; r[_xDayKey] = n; return r; }); }
-    function setExtraPlDocsDay(updater) { setExtraPlDocs(function(prev) { var p = Array.isArray(prev) ? {} : prev; var c = p[_xDayKey] || []; var n = typeof updater === 'function' ? updater(c) : updater; var r = {}; for (var k in p) r[k] = p[k]; r[_xDayKey] = n; return r; }); }
+    function setExtraHcDocsDay(updater) { setExtraHcDocs(function(prev) { var p = Array.isArray(prev) ? {} : prev; var c = p[_xDayKey] || []; var n = typeof updater === 'function' ? updater(c) : updater; var r = {}; for (var k in p) r[k] = p[k]; r[_xDayKey] = n; window._holterLocalDirty = window._holterLocalDirty || {}; window._holterLocalDirty.extra_hc = window._holterLocalDirty.extra_hc || {}; window._holterLocalDirty.extra_hc[_xDayKey] = n; return r; }); }
+    function setExtraHpDocsDay(updater) { setExtraHpDocs(function(prev) { var p = Array.isArray(prev) ? {} : prev; var c = p[_xDayKey] || []; var n = typeof updater === 'function' ? updater(c) : updater; var r = {}; for (var k in p) r[k] = p[k]; r[_xDayKey] = n; window._holterLocalDirty = window._holterLocalDirty || {}; window._holterLocalDirty.extra_hp = window._holterLocalDirty.extra_hp || {}; window._holterLocalDirty.extra_hp[_xDayKey] = n; return r; }); }
+    function setExtraSpDocsDay(updater) { setExtraSpDocs(function(prev) { var p = Array.isArray(prev) ? {} : prev; var c = p[_xDayKey] || []; var n = typeof updater === 'function' ? updater(c) : updater; var r = {}; for (var k in p) r[k] = p[k]; r[_xDayKey] = n; window._holterLocalDirty = window._holterLocalDirty || {}; window._holterLocalDirty.extra_sp = window._holterLocalDirty.extra_sp || {}; window._holterLocalDirty.extra_sp[_xDayKey] = n; return r; }); }
+    function setExtraPlDocsDay(updater) { setExtraPlDocs(function(prev) { var p = Array.isArray(prev) ? {} : prev; var c = p[_xDayKey] || []; var n = typeof updater === 'function' ? updater(c) : updater; var r = {}; for (var k in p) r[k] = p[k]; r[_xDayKey] = n; window._holterLocalDirty = window._holterLocalDirty || {}; window._holterLocalDirty.extra_pl = window._holterLocalDirty.extra_pl || {}; window._holterLocalDirty.extra_pl[_xDayKey] = n; return r; }); }
     var slotKey = dayIdx + "_" + sessionIdx;
 
     // ── Turno Completo ─────────────────────────────────────────────
