@@ -24418,6 +24418,7 @@ body {
     var _fl = (0, import_react3.useState)(false);
     var fsLoaded = _fl[0], setFsLoaded = _fl[1];
     var saveTimer = (0, import_react3.useRef)(null);
+    var pendingSnap = (0, import_react3.useRef)(null); // buffer snapshot remoti arrivati durante ignoreSnap
     var ignoreSnap = (0, import_react3.useRef)(false);
     var fromRemote = (0, import_react3.useRef)(false);
     var _addHc = (0, import_react3.useState)(null); var addHcOpen = _addHc[0], setAddHcOpen = _addHc[1];
@@ -24560,11 +24561,9 @@ body {
         // 1) echo del proprio salvataggio (ignoreSnap)
         // 2) snapshot che arriva MENTRE si sta digitando (_anyCountFocused)
         // 3) snapshot che arriva entro 900 ms dal blur (save in corso)
-        if (
-          ignoreSnap.current ||
-          window._anyCountFocused ||
-          (Date.now() - (window._lastCountBlur || 0) < 900)
-        ) return;
+        if (window._anyCountFocused || (Date.now() - (window._lastCountBlur || 0) < 900)) return;
+        // Se stiamo ignorando (save in corso), bufferizziamo anziché perdere lo snapshot remoto
+        if (ignoreSnap.current) { pendingSnap.current = doc; return; }
         fromRemote.current = true;
         if (doc.exists) {
           var d = doc.data();
@@ -24606,6 +24605,7 @@ body {
       // Svuotiamo eventuali snapshot remoti bufferizzati: saranno rimpiazzati
       // dall'aggiornamento che stiamo per salvare (che già fa merge 3-way).
       window._pendingRealtimeSnap = {};
+      pendingSnap.current = null; // reset buffer snapshot remoti (verranno ricaricati post-save)
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(function() {
         var savePromise = window._fbSaveHolterCounts
@@ -24625,7 +24625,35 @@ body {
           saveTimer.current = null;
           setTimeout(function() {
             // Riattiva snapshot SOLO se nessun nuovo save è stato schedulato nel frattempo
-            if (!saveTimer.current && saveTimer.current === _timerAtSave) ignoreSnap.current = false;
+            if (!saveTimer.current && saveTimer.current === _timerAtSave) {
+              ignoreSnap.current = false;
+              // Se è arrivato uno snapshot remoto durante la finestra di ignore,
+              // rilegge il DB per ottenere lo stato completamente aggiornato (merge incluso).
+              if (pendingSnap.current) {
+                pendingSnap.current = null;
+                fsDb.collection('holter_counts').doc(weekKey).get().then(function(_cuDoc) {
+                  if (!_cuDoc.exists) return;
+                  fromRemote.current = true;
+                  var _cd = _cuDoc.data();
+                  var _cdk = 'holter_draft_' + weekKey, _cdraft = null;
+                  try { _cdraft = JSON.parse(localStorage.getItem(_cdk) || 'null'); } catch(e2) {}
+                  var _cdbTs = _cd.updatedAt ? new Date(_cd.updatedAt).getTime() : 0;
+                  var _csrc = (_cdraft && _cdraft._ts > _cdbTs) ? _cdraft : _cd;
+                  if (_csrc.hc) setHcCounts(function(prev){ var _dh=(window._holterLocalDirty||{}).hc||{}; return Object.assign({},_csrc.hc,(function(_d,_prev){var o={}; Object.keys(_d).forEach(function(k){o[k]=_prev[k];}); return o;})(_dh,prev)); });
+                  if (_csrc.hp) setHpCounts(function(prev){ var _dh=(window._holterLocalDirty||{}).hp||{}; return Object.assign({},_csrc.hp,(function(_d,_prev){var o={}; Object.keys(_d).forEach(function(k){o[k]=_prev[k];}); return o;})(_dh,prev)); });
+                  if (_csrc.spiro) setSpiroCounts(function(prev){ var _dh=(window._holterLocalDirty||{}).spiro||{}; return Object.assign({},_csrc.spiro,(function(_d,_prev){var o={}; Object.keys(_d).forEach(function(k){o[k]=_prev[k];}); return o;})(_dh,prev)); });
+                  if (_csrc.pls) setPlsCounts(function(prev){ var _dh=(window._holterLocalDirty||{}).pls||{}; return Object.assign({},_csrc.pls,(function(_d,_prev){var o={}; Object.keys(_d).forEach(function(k){o[k]=_prev[k];}); return o;})(_dh,prev)); });
+                  if (_csrc.notes) setDoctorNotes(_csrc.notes);
+                  if (_csrc.ecgTimes) setEcgTimes(_csrc.ecgTimes);
+                  if (_csrc.extraHc && !Array.isArray(_csrc.extraHc)) setExtraHcDocs(_csrc.extraHc);
+                  if (_csrc.extraHp && !Array.isArray(_csrc.extraHp)) setExtraHpDocs(_csrc.extraHp);
+                  if (_csrc.extraSp && !Array.isArray(_csrc.extraSp)) setExtraSpDocs(_csrc.extraSp);
+                  if (_csrc.extraPl && !Array.isArray(_csrc.extraPl)) setExtraPlDocs(_csrc.extraPl);
+                  if (_csrc.disp_overrides && typeof _csrc.disp_overrides === 'object') setDispOverrides(_csrc.disp_overrides);
+                  setFsLoaded(true);
+                }).catch(function() {});
+              }
+            }
           }, 900);
         }).catch(function(err) { console.warn("Firestore save error:", err); ignoreSnap.current = false; saveTimer.current = null; });
       }, 300);
@@ -24665,9 +24693,9 @@ body {
               if (_slot !== 'confermato-ecg') return;
               var _docName  = _dk.replace(/\u00B7/g, '.');
               var _dType    = ((vercelData.doctorTypes || {})[_dk] || '');
-              var _ecgLabel = _dType.indexOf('ecg75') >= 0 ? 'ECG 75' : 'ECG 100';
               // Cerca orario personalizzato nell'anagrafica cardiologi
               var _mc = _matchCardiologo(_docName, cardiologi);
+              var _ecgLabel = (_mc && _mc.ecg75) ? 'ECG 75' : ((_mc && _mc.ecg100) ? 'ECG 100' : (_dType.indexOf('ecg75') >= 0 ? 'ECG 75' : 'ECG 100'));
               var _orarioStr = (_mc && _mc.orario) ? _mc.orario : null;
               // Fallback: orario standard per tipo ECG
               if (!_orarioStr) {
@@ -24744,10 +24772,10 @@ body {
     var extraHpDocsDay = Array.isArray(extraHpDocs) ? [] : (extraHpDocs[_xDayKey] || []);
     var extraSpDocsDay = Array.isArray(extraSpDocs) ? [] : (extraSpDocs[_xDayKey] || []);
     var extraPlDocsDay = Array.isArray(extraPlDocs) ? [] : (extraPlDocs[_xDayKey] || []);
-    function setExtraHcDocsDay(updater) { setExtraHcDocs(function(prev) { var p = Array.isArray(prev) ? {} : prev; var c = p[_xDayKey] || []; var n = typeof updater === 'function' ? updater(c) : updater; var r = {}; for (var k in p) r[k] = p[k]; r[_xDayKey] = n; window._holterLocalDirty = window._holterLocalDirty || {}; window._holterLocalDirty.extra_hc = window._holterLocalDirty.extra_hc || {}; window._holterLocalDirty.extra_hc[_xDayKey] = n; return r; }); }
-    function setExtraHpDocsDay(updater) { setExtraHpDocs(function(prev) { var p = Array.isArray(prev) ? {} : prev; var c = p[_xDayKey] || []; var n = typeof updater === 'function' ? updater(c) : updater; var r = {}; for (var k in p) r[k] = p[k]; r[_xDayKey] = n; window._holterLocalDirty = window._holterLocalDirty || {}; window._holterLocalDirty.extra_hp = window._holterLocalDirty.extra_hp || {}; window._holterLocalDirty.extra_hp[_xDayKey] = n; return r; }); }
-    function setExtraSpDocsDay(updater) { setExtraSpDocs(function(prev) { var p = Array.isArray(prev) ? {} : prev; var c = p[_xDayKey] || []; var n = typeof updater === 'function' ? updater(c) : updater; var r = {}; for (var k in p) r[k] = p[k]; r[_xDayKey] = n; window._holterLocalDirty = window._holterLocalDirty || {}; window._holterLocalDirty.extra_sp = window._holterLocalDirty.extra_sp || {}; window._holterLocalDirty.extra_sp[_xDayKey] = n; return r; }); }
-    function setExtraPlDocsDay(updater) { setExtraPlDocs(function(prev) { var p = Array.isArray(prev) ? {} : prev; var c = p[_xDayKey] || []; var n = typeof updater === 'function' ? updater(c) : updater; var r = {}; for (var k in p) r[k] = p[k]; r[_xDayKey] = n; window._holterLocalDirty = window._holterLocalDirty || {}; window._holterLocalDirty.extra_pl = window._holterLocalDirty.extra_pl || {}; window._holterLocalDirty.extra_pl[_xDayKey] = n; return r; }); }
+    function setExtraHcDocsDay(updater) { setExtraHcDocs(function(prev) { var p = Array.isArray(prev) ? {} : prev; var c = p[_xDayKey] || []; var n = typeof updater === 'function' ? updater(c) : updater; var r = {}; for (var k in p) r[k] = p[k]; r[_xDayKey] = n; return r; }); }
+    function setExtraHpDocsDay(updater) { setExtraHpDocs(function(prev) { var p = Array.isArray(prev) ? {} : prev; var c = p[_xDayKey] || []; var n = typeof updater === 'function' ? updater(c) : updater; var r = {}; for (var k in p) r[k] = p[k]; r[_xDayKey] = n; return r; }); }
+    function setExtraSpDocsDay(updater) { setExtraSpDocs(function(prev) { var p = Array.isArray(prev) ? {} : prev; var c = p[_xDayKey] || []; var n = typeof updater === 'function' ? updater(c) : updater; var r = {}; for (var k in p) r[k] = p[k]; r[_xDayKey] = n; return r; }); }
+    function setExtraPlDocsDay(updater) { setExtraPlDocs(function(prev) { var p = Array.isArray(prev) ? {} : prev; var c = p[_xDayKey] || []; var n = typeof updater === 'function' ? updater(c) : updater; var r = {}; for (var k in p) r[k] = p[k]; r[_xDayKey] = n; return r; }); }
     var slotKey = dayIdx + "_" + sessionIdx;
 
     // ── Turno Completo ─────────────────────────────────────────────
@@ -25470,9 +25498,9 @@ body {
                     ],
                     ecgOnlyDocs.map(function(d, i) {
                       var dType = (vercelData.doctorTypes || {})[d.key] || "";
-                      var ecgLabel = dType.indexOf("ecg75") >= 0 ? "ECG 75" : "ECG 100";
                       var dExtra = (vercelData.doctorExtra || {})[d.key] || {};
                       var _cMecg = _matchCardiologo(d.key, cardiologi) || {};
+                      var ecgLabel = _cMecg.ecg75 ? "ECG 75" : (_cMecg.ecg100 ? "ECG 100" : (dType.indexOf("ecg75") >= 0 ? "ECG 75" : "ECG 100"));
                       var badges = [(0, _j)("span", { style: { fontSize: "9px", fontWeight: "600", color: "#d97706", border: "1px solid rgba(217,119,6,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "3px" }, children: ecgLabel })];
                       if (_cMecg.ssr === "SI" || (!_cMecg.ssr && dExtra.ssr)) badges.push((0, _j)("span", { title: "Convenzione SSR", style: { fontSize: "9px", fontWeight: "600", color: "#6366f1", border: "1px solid rgba(99,102,241,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "SSR" }, "ssr"));
                       if (_cMecg.pediatrici === "SI" || (!_cMecg.pediatrici && dExtra.pediatrico)) badges.push((0, _j)("span", { title: "Pazienti Pediatrici", style: { fontSize: "9px", fontWeight: "600", color: "#ec4899", border: "1px solid rgba(236,72,153,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "\u{1F37C}" }, "ped"));
