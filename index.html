@@ -1032,232 +1032,107 @@ body {
           throw e;
         });
     };
+  
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // PATCH v18 — Riconnessione Realtime + Polling fallback multi-utente
-    // Garantisce che tutti i client vedano le modifiche anche quando il canale
-    // WebSocket cade silenziosamente (rete instabile / scritture concorrenti).
-    // ═══════════════════════════════════════════════════════════════════════
+    // ── PATCH v18b ─ Polling-fallback multi-utente ──────────────────────────
+    // Strategia sicura: le funzioni originali _fbOnSnapshot e _fbSSE vengono
+    // chiamate invariate. Questo blocco registra solo i callback, poi esegue
+    // un polling leggero ogni 30 s come rete di sicurezza.
     (function() {
-      'use strict';
 
-      // ── 1) _fbOnSnapshot: riconnessione + polling ogni 30s ──────────────
-      //      Copre: turni_medici/turni  e  turni_medici/cardiologists
-      var _origOnSnapshot = window._fbOnSnapshot;
+      // ── 1) Intercetta _fbOnSnapshot per memorizzare i callback ─────────
+      var _origFbOnSnapshot = window._fbOnSnapshot;
+      var _cbTurni = null, _cbCards = null;
+
       window._fbOnSnapshot = function(onTurniChange, onCardsChange) {
-        var _lastTurniTs = null;
-        var _lastCardsTs = null;
+        _cbTurni = onTurniChange;
+        _cbCards = onCardsChange;
+        return _origFbOnSnapshot(onTurniChange, onCardsChange); // chiama originale
+      };
 
-        // Polling leggero: rilegge solo updated_at, poi i dati completi se cambiati
-        async function _poll() {
-          try {
-            var r = await _sb.from('kv_store').select('id, updated_at')
+      // ── 2) Intercetta _fbSSE per memorizzare i callback ────────────────
+      var _origFbSSE = window._fbSSE;
+      var _sseCbs = {};  // path → callback
+
+      window._fbSSE = function(path) {
+        var innerFn = _origFbSSE(path);   // chiama originale
+        return function(cb) {
+          _sseCbs[path] = cb;
+          return innerFn(cb);             // chiama originale
+        };
+      };
+
+      // ── 3) Polling fallback ─────────────────────────────────────────────
+      // Salva i timestamp visti l'ultima volta; se cambiati chiama i callback.
+      var _tsCache = {};   // key → updated_at visto
+      var _initDone = {};  // key → true dopo il primo poll (baseline)
+      var _busy = false;
+
+      async function _pollAll() {
+        if (_busy) return;
+        _busy = true;
+        try {
+          // — turni_medici/turni + turni_medici/cardiologists ————————————
+          if (_cbTurni || _cbCards) {
+            var r = await _sb.from('kv_store')
+              .select('id, data, updated_at')
               .in('id', ['turni_medici/turni', 'turni_medici/cardiologists']);
-            if (!r.data) return;
-            for (var i = 0; i < r.data.length; i++) {
-              var row = r.data[i];
-              var isTurni = (row.id === 'turni_medici/turni');
-              var lastTs  = isTurni ? _lastTurniTs : _lastCardsTs;
-              if (lastTs === row.updated_at) continue;           // nessuna modifica
-              var full = await _sb.from('kv_store').select('data, updated_at')
-                .eq('id', row.id).maybeSingle();
-              if (!full.data || !full.data.data || !full.data.data.lista) continue;
-              var prevTs = isTurni ? _lastTurniTs : _lastCardsTs;
-              if (isTurni) _lastTurniTs = row.updated_at;
-              else         _lastCardsTs = row.updated_at;
-              if (!prevTs) continue;                              // primo caricamento
-              if (full.data.data._sid && full.data.data._sid === window._sessionId) continue;
-              if (isTurni) {
-                window._turniBase = JSON.parse(JSON.stringify(full.data.data.lista));
-                onTurniChange(full.data.data.lista);
-              } else {
-                window._cardsBase = JSON.parse(JSON.stringify(full.data.data.lista));
-                onCardsChange(full.data.data.lista);
+            if (r.data) {
+              for (var i = 0; i < r.data.length; i++) {
+                var row = r.data[i];
+                var k   = 'kv_' + row.id;
+                if (!_initDone[k]) { _initDone[k] = true; _tsCache[k] = row.updated_at; continue; }
+                if (_tsCache[k] === row.updated_at) continue;
+                _tsCache[k] = row.updated_at;
+                if (!row.data || !row.data.lista) continue;
+                if (row.data._sid && row.data._sid === window._sessionId) continue;
+                if (row.id === 'turni_medici/turni' && _cbTurni) {
+                  window._turniBase = JSON.parse(JSON.stringify(row.data.lista));
+                  _cbTurni(row.data.lista);
+                } else if (row.id === 'turni_medici/cardiologists' && _cbCards) {
+                  window._cardsBase = JSON.parse(JSON.stringify(row.data.lista));
+                  _cbCards(row.data.lista);
+                }
               }
             }
-          } catch(e) { console.warn('[fbOnSnapshot poll]', e); }
-        }
-
-        var _ch = null, _reconnTimer = null;
-        var _pollIv = setInterval(_poll, 30000);
-
-        function _setup() {
-          if (_reconnTimer) { clearTimeout(_reconnTimer); _reconnTimer = null; }
-          _ch = _sb.channel('kv_turni_realtime')
-            .on('postgres_changes', {
-              event: '*', schema: 'public', table: 'kv_store',
-              filter: 'id=eq.turni_medici/turni'
-            }, function(p) {
-              if (p.new && p.new.data && p.new.data.lista) {
-                if (p.new.data._sid && p.new.data._sid === window._sessionId) return;
-                _lastTurniTs = (p.new && p.new.updated_at) || null;
-                window._turniBase = JSON.parse(JSON.stringify(p.new.data.lista));
-                onTurniChange(p.new.data.lista);
-              }
-            })
-            .on('postgres_changes', {
-              event: '*', schema: 'public', table: 'kv_store',
-              filter: 'id=eq.turni_medici/cardiologists'
-            }, function(p) {
-              if (p.new && p.new.data && p.new.data.lista) {
-                if (p.new.data._sid && p.new.data._sid === window._sessionId) return;
-                _lastCardsTs = (p.new && p.new.updated_at) || null;
-                window._cardsBase = JSON.parse(JSON.stringify(p.new.data.lista));
-                onCardsChange(p.new.data.lista);
-              }
-            })
-            .subscribe(function(status) {
-              if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-                console.warn('[fbOnSnapshot] canale Realtime:', status,
-                             '\u2192 riconnessione in 5s');
-                _sb.removeChannel(_ch);
-                _poll();                                         // controlla subito
-                _reconnTimer = setTimeout(_setup, 5000);
-              }
-            });
-        }
-        _setup();
-
-        // Poll immediato quando la scheda torna visibile (alt+tab, cambio finestra…)
-        function _onVis() {
-          if (document.visibilityState === 'visible') setTimeout(_poll, 600);
-        }
-        document.addEventListener('visibilitychange', _onVis);
-
-        return function() {
-          if (_ch) _sb.removeChannel(_ch);
-          clearInterval(_pollIv);
-          clearTimeout(_reconnTimer);
-          document.removeEventListener('visibilitychange', _onVis);
-        };
-      };
-
-      // ── 2) _fbSSE: polling ogni 30s + poll al ritorno sulla tab ─────────
-      //      Copre: cardio_state (settimane Holter, tipi medici, ecc.)
-      var _origFbSSE = window._fbSSE;
-      window._fbSSE = function(path) {
-        var _origFn = _origFbSSE(path);
-        return function(cb) {
-          var _lastTs   = null;
-          var _initDone = false;
-
-          // Chiamata originale: esegue caricamento iniziale + subscription Realtime
-          var origCleanup = _origFn(function(val) {
-            cb(val);
-            // Aggiorna il timestamp di riferimento dal DB (asincrono, non bloccante)
-            _sb.from('cardio_state').select('updated_at').eq('path', path).maybeSingle()
-              .then(function(r) { if (r.data) _lastTs = r.data.updated_at; })
-              .catch(function() {});
-          });
-
-          // Polling fallback: rilegge updated_at e, se cambiato, i dati completi
-          async function _poll() {
-            try {
-              var r = await _sb.from('cardio_state').select('updated_at')
-                .eq('path', path).maybeSingle();
-              if (!r.data) return;
-              if (!_initDone) { _initDone = true; _lastTs = r.data.updated_at; return; }
-              if (_lastTs === r.data.updated_at) return;
-              var prev = _lastTs;
-              _lastTs = r.data.updated_at;
-              if (!prev) return;
-              var full = await _sb.from('cardio_state').select('data')
-                .eq('path', path).maybeSingle();
-              if (full.data) cb(full.data.data);
-            } catch(e) {}
           }
 
-          // Inizializza subito il baseline timestamp (dopo il caricamento iniziale)
-          setTimeout(function() { _initDone = true; }, 5000);
-
-          var _pollIv = setInterval(_poll, 30000);
-          function _onVis() {
-            if (document.visibilityState === 'visible') setTimeout(_poll, 800);
+          // — cardio_state paths ————————————————————————————————————————
+          var paths = Object.keys(_sseCbs);
+          for (var j = 0; j < paths.length; j++) {
+            var path = paths[j];
+            var cb   = _sseCbs[path];
+            if (!cb) continue;
+            var r2 = await _sb.from('cardio_state')
+              .select('data, updated_at')
+              .eq('path', path)
+              .maybeSingle();
+            if (!r2.data) continue;
+            var k2 = 'sse_' + path;
+            if (!_initDone[k2]) { _initDone[k2] = true; _tsCache[k2] = r2.data.updated_at; continue; }
+            if (_tsCache[k2] === r2.data.updated_at) continue;
+            _tsCache[k2] = r2.data.updated_at;
+            cb(r2.data.data);
           }
-          document.addEventListener('visibilitychange', _onVis);
+        } catch(e) {
+          console.warn('[poll-fallback v18b]', e);
+        }
+        _busy = false;
+      }
 
-          return function() {
-            if (origCleanup) origCleanup();
-            clearInterval(_pollIv);
-            document.removeEventListener('visibilitychange', _onVis);
-          };
-        };
-      };
+      // Avvia il polling dopo 10 s (tempo di caricamento iniziale della pagina)
+      setTimeout(function() {
+        _pollAll();                                       // baseline immediato
+        setInterval(_pollAll, 30000);                     // poi ogni 30 s
 
-      // ── 3) Firestore shim onSnapshot: polling ogni 40s ──────────────────
-      //      Copre: holter_counts (conteggi settimanali HC/HP/Spiro/PLS…)
-      //      Nota: il patch avviene prima che i componenti React montino il shim,
-      //      quindi tutti i successivi .collection().doc().onSnapshot() ne beneficiano.
-      (function() {
-        if (!window.firebase || !window.firebase.firestore) return;
-        var shim = window.firebase.firestore();
-        var _origColl = shim.collection.bind(shim);
-        shim.collection = function(coll) {
-          var collRef = _origColl(coll);
-          var _origDoc = collRef.doc.bind(collRef);
-          collRef.doc = function(docId) {
-            var docRef = _origDoc(docId);
-            var _origSnap = docRef.onSnapshot.bind(docRef);
-            docRef.onSnapshot = function(onNext, onError) {
-              var origUnsub = _origSnap(onNext, onError);
-              var table  = (coll === 'holter_counts') ? 'holter_counts' : 'kv_store';
-              var keyCol = (coll === 'holter_counts') ? 'week_key'      : 'id';
-              var keyVal = (coll === 'holter_counts') ? docId           : (coll + '/' + docId);
-              var _lastTs   = null;
-              var _initDone = false;
-
-              async function _poll() {
-                try {
-                  var r = await _sb.from(table).select('updated_at')
-                    .eq(keyCol, keyVal).maybeSingle();
-                  if (!r.data) return;
-                  if (!_initDone) { _initDone = true; _lastTs = r.data.updated_at; return; }
-                  if (_lastTs === r.data.updated_at) return;
-                  var prev = _lastTs;
-                  _lastTs = r.data.updated_at;
-                  if (!prev) return;
-                  // Se l'utente sta digitando, usa il meccanismo _pendingRealtimeSnap
-                  if (window._anyCountFocused && coll === 'holter_counts') {
-                    var _sk = table + '_' + keyVal;
-                    window._pendingRealtimeSnap = window._pendingRealtimeSnap || {};
-                    window._pendingRealtimeSnap[_sk] = {
-                      onNext: onNext,
-                      doc: null,
-                      dataUpdatedAt: r.data.updated_at
-                    };
-                    docRef.get().then(function(doc) {
-                      if (window._pendingRealtimeSnap && window._pendingRealtimeSnap[_sk]) {
-                        window._pendingRealtimeSnap[_sk].doc = doc;
-                      }
-                    }).catch(function() {});
-                  } else {
-                    docRef.get().then(function(doc) { onNext(doc); }).catch(function() {});
-                  }
-                } catch(e) {}
-              }
-
-              setTimeout(function() { _initDone = true; }, 5000);
-              var _pollIv = setInterval(_poll, 40000);
-              function _onVis() {
-                if (document.visibilityState === 'visible') setTimeout(_poll, 1000);
-              }
-              document.addEventListener('visibilitychange', _onVis);
-
-              return function() {
-                if (origUnsub) origUnsub();
-                clearInterval(_pollIv);
-                document.removeEventListener('visibilitychange', _onVis);
-              };
-            };
-            return docRef;
-          };
-          return collRef;
-        };
-      })();
+        // Poll immediato quando la tab ritorna visibile
+        document.addEventListener('visibilitychange', function() {
+          if (document.visibilityState === 'visible') setTimeout(_pollAll, 700);
+        });
+      }, 10000);
 
     })();
-    // ── fine PATCH v18 ────────────────────────────────────────────────────
-
+    // ── fine PATCH v18b ──────────────────────────────────────────────────────
   </script>
 <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
 
