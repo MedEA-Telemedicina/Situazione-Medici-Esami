@@ -886,99 +886,82 @@ body {
       });
     };
 
+    // ════════════════════════════════════════════════════════════════════════
+    // PATCH v19 — Supabase Broadcast real-time (<100ms)
+    // Sostituisce postgres_changes (1-5s WAL) con Broadcast WebSocket diretto.
+    // Architettura:
+    //   • bc_turni_realtime  → turni + cardiologists
+    //   • bc_c_{path_safe}   → cardio_state (per-path, gestito da _fbSSE)
+    //   • bc_h_{wk_safe}     → holter_counts (per-weekKey)
+    // ════════════════════════════════════════════════════════════════════════
+
+    // ── _fbOnSnapshot: turni + cardiologists via Broadcast ───────────────────
     window._fbOnSnapshot = function(onTurniChange, onCardsChange) {
-      var ch = _sb.channel('kv_turni_realtime')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'kv_store', filter: "id=eq.turni_medici/turni" }, function(p) {
-          if (p.new && p.new.data && p.new.data.lista) {
-            // Ignora gli eventi generati dal proprio browser (evita il re-render
-            // che cancella quanto l'utente sta ancora digitando)
-            if (p.new.data._sid && p.new.data._sid === window._sessionId) return;
-            // Aggiorna la base in modo che il prossimo salvataggio sappia cosa
-            // è già in DB (evita che le modifiche remote vengano perse al merge)
-            window._turniBase = JSON.parse(JSON.stringify(p.new.data.lista));
-            onTurniChange(p.new.data.lista);
-          }
+      var ch = _sb.channel('bc_turni_realtime')
+        .on('broadcast', { event: 'turni_update' }, function(msg) {
+          var p = msg.payload;
+          if (!p || !p.lista) return;
+          if (p._sid && p._sid === window._sessionId) return;
+          window._turniBase = JSON.parse(JSON.stringify(p.lista));
+          onTurniChange(p.lista);
         })
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'kv_store', filter: "id=eq.turni_medici/cardiologists" }, function(p) {
-          if (p.new && p.new.data && p.new.data.lista) {
-            // Ignora gli eventi generati dal proprio browser
-            if (p.new.data._sid && p.new.data._sid === window._sessionId) return;
-            window._cardsBase = JSON.parse(JSON.stringify(p.new.data.lista));
-            onCardsChange(p.new.data.lista);
-          }
+        .on('broadcast', { event: 'cards_update' }, function(msg) {
+          var p = msg.payload;
+          if (!p || !p.lista) return;
+          if (p._sid && p._sid === window._sessionId) return;
+          window._cardsBase = JSON.parse(JSON.stringify(p.lista));
+          onCardsChange(p.lista);
         })
-        .subscribe();
-      return function() { _sb.removeChannel(ch); };
+        .subscribe(function(status) {
+          if (status === 'SUBSCRIBED') console.log('[bc] bc_turni_realtime SUBSCRIBED');
+        });
+      window._bcTurniCh = ch;
+      return function() { _sb.removeChannel(ch); window._bcTurniCh = null; };
     };
 
+    // ── _fbSSE: cardio_state paths via Broadcast ──────────────────────────────
     window._fbSSE = function(path) {
-      // ── Lettura iniziale: Supabase ha priorità (dati salvati dagli utenti),
-      //    Firebase RTDB è usato solo come sorgente originale se Supabase
-      //    non ha ancora un record per questo path.
-      //    Realtime via Supabase garantisce aggiornamenti live tra colleghi.
       var _RTDB_BASE = 'https://gestione-turni-345c2-default-rtdb.europe-west1.firebasedatabase.app';
       return function(cb) {
-
-        // 1) Caricamento iniziale: prima Supabase, poi Firebase come fallback
+        // 1) Lettura iniziale: Supabase → Firebase fallback (invariata)
         _sb.from('cardio_state').select('data').eq('path', path).maybeSingle()
           .then(function(r) {
             if (r.data && r.data.data !== undefined && r.data.data !== null) {
-              // Supabase ha dati salvati dagli utenti → usa quelli (persistenti)
-              console.log('[_fbSSE] Dati da Supabase per:', path);
+              console.log('[bc] cardio_state load Supabase:', path);
               cb(r.data.data);
             } else {
-              // Nessun dato in Supabase → leggi da Firebase RTDB (dati originali)
-              console.log('[_fbSSE] Nessun dato in Supabase, leggo da Firebase per:', path);
+              console.log('[bc] cardio_state fallback Firebase:', path);
               window.fetch(_RTDB_BASE + '/' + path + '.json')
                 .then(function(res) { return res.json(); })
                 .then(function(val) {
-                  if (val && typeof val === 'object' && val.error) {
-                    console.warn('[_fbSSE] Firebase error per path "' + path + '":', val.error);
-                    cb(null);
-                  } else {
-                    cb(val || null);
-                  }
+                  cb((val && typeof val === 'object' && val.error) ? null : (val || null));
                 })
-                .catch(function(e) {
-                  console.warn('[_fbSSE] Fetch Firebase error:', e);
-                  cb(null);
-                });
+                .catch(function() { cb(null); });
             }
           })
-          .catch(function(e) {
-            console.warn('[_fbSSE] Supabase error, fallback Firebase:', e);
-            // Fallback diretto su Firebase in caso di errore Supabase
-            window.fetch(_RTDB_BASE + '/' + path + '.json')
-              .then(function(res) { return res.json(); })
-              .then(function(val) { cb((val && !val.error) ? val : null); })
-              .catch(function() { cb(null); });
-          });
+          .catch(function() { cb(null); });
 
-        // 2) Subscription realtime: quando un collega salva una modifica su
-        //    Supabase, questo canale notifica tutti gli altri client connessi.
-        var chName = ('rt_' + path).replace(/[^a-zA-Z0-9]/g, '_').substring(0, 64);
-        var ch = _sb.channel(chName)
-          .on('postgres_changes', {
-            event: '*',
-            schema: 'public',
-            table: 'cardio_state',
-            filter: 'path=eq.' + path
-          }, function(payload) {
-            if (payload.eventType === 'DELETE') {
-              cb(null);
-            } else if (payload.new && payload.new.data !== undefined) {
-              cb(payload.new.data);
-            }
+        // 2) Broadcast listener per aggiornamenti sub-100ms
+        var chKey = ('bc_c_' + path).replace(/[^a-zA-Z0-9]/g, '_').substring(0, 64);
+        var ch = _sb.channel(chKey)
+          .on('broadcast', { event: 'state_update' }, function(msg) {
+            var p = msg.payload;
+            if (!p) return;
+            if (p._sid && p._sid === window._sessionId) return;
+            cb(p.data !== undefined ? p.data : null);
           })
           .subscribe(function(status) {
             if (status === 'SUBSCRIBED') {
-              console.log('[_fbSSE] Realtime attivo per:', path);
+              console.log('[bc] bc_c SUBSCRIBED:', path);
+              if (!window._bcCardioChs) window._bcCardioChs = {};
+              window._bcCardioChs[chKey] = ch;
             }
           });
 
-        // 3) Funzione di cleanup: rimuove il canale Supabase quando il
-        //    componente viene smontato (evita memory leak)
-        return function() { _sb.removeChannel(ch); };
+        return function() {
+          _sb.removeChannel(ch);
+          if (window._bcCardioChs) delete window._bcCardioChs[chKey];
+        };
       };
     };
 
@@ -1005,24 +988,16 @@ body {
       t._hideTimer = setTimeout(function() { t.style.opacity = '0'; }, type === 'error' ? 5000 : 2000);
     };
 
-    // Wrap save functions per mostrare feedback errori
+    // ── Wrappers toast-errori per le funzioni di salvataggio ─────────────────
     var _origSaveTurni = window._fbSaveTurni;
     window._fbSaveTurni = async function(updated) {
-      try {
-        await _origSaveTurni(updated);
-      } catch(e) {
-        window._fbToast('\u274c Errore salvataggio turni: ' + (e.message||e), 'error');
-        throw e;
-      }
+      try { await _origSaveTurni(updated); }
+      catch(e) { window._fbToast('\u274c Errore salvataggio turni: ' + (e.message||e), 'error'); throw e; }
     };
     var _origSaveCards = window._fbSaveCardiologists;
     window._fbSaveCardiologists = async function(updated) {
-      try {
-        await _origSaveCards(updated);
-      } catch(e) {
-        window._fbToast('\u274c Errore salvataggio medici: ' + (e.message||e), 'error');
-        throw e;
-      }
+      try { await _origSaveCards(updated); }
+      catch(e) { window._fbToast('\u274c Errore salvataggio medici: ' + (e.message||e), 'error'); throw e; }
     };
     var _origSaveCounts = window._fbSaveHolterCounts;
     window._fbSaveHolterCounts = function(weekKey, hc, hp, spiro, pls, notes, ecgTimes, extraHc, extraHp, extraSp, extraPl, dispOverrides) {
@@ -1032,47 +1007,240 @@ body {
           throw e;
         });
     };
-  
 
-    // ── PATCH v18b ─ Polling-fallback multi-utente ──────────────────────────
-    // Strategia sicura: le funzioni originali _fbOnSnapshot e _fbSSE vengono
-    // chiamate invariate. Questo blocco registra solo i callback, poi esegue
-    // un polling leggero ogni 30 s come rete di sicurezza.
+    // ════════════════════════════════════════════════════════════════════════
+    // PATCH v19 — IIFE principale
+    // ════════════════════════════════════════════════════════════════════════
     (function() {
 
-      // ── 1) Intercetta _fbOnSnapshot per memorizzare i callback ─────────
-      var _origFbOnSnapshot = window._fbOnSnapshot;
-      var _cbTurni = null, _cbCards = null;
+      // ── Registry canali Broadcast holter (per-weekKey, lazy) ──────────────
+      var _bcHolterChs = {};
 
+      function _getBcHolterCh(weekKey, onReady) {
+        var chKey = ('bc_h_' + weekKey).replace(/[^a-zA-Z0-9]/g, '_').substring(0, 64);
+        if (_bcHolterChs[chKey]) { onReady(_bcHolterChs[chKey]); return; }
+        var ch = _sb.channel(chKey);
+        ch.subscribe(function(status) {
+          if (status === 'SUBSCRIBED') {
+            _bcHolterChs[chKey] = ch;
+            onReady(ch);
+          }
+        });
+      }
+
+      // ── 1) Wrap _fbSaveTurni → Broadcast dopo salvataggio ────────────────
+      var _wTurni = window._fbSaveTurni;
+      window._fbSaveTurni = function(updated) {
+        return _wTurni(updated).then(function() {
+          try {
+            var ch = window._bcTurniCh;
+            if (ch && window._turniBase) {
+              ch.send({
+                type: 'broadcast', event: 'turni_update',
+                payload: { lista: window._turniBase, _sid: window._sessionId }
+              }).catch(function(){});
+            }
+          } catch(e) { /* ignora errori broadcast */ }
+        });
+      };
+
+      // ── 2) Wrap _fbSaveCardiologists → Broadcast dopo salvataggio ────────
+      var _wCards = window._fbSaveCardiologists;
+      window._fbSaveCardiologists = function(updated) {
+        return _wCards(updated).then(function() {
+          try {
+            var ch = window._bcTurniCh;
+            if (ch && window._cardsBase) {
+              ch.send({
+                type: 'broadcast', event: 'cards_update',
+                payload: { lista: window._cardsBase, _sid: window._sessionId }
+              }).catch(function(){});
+            }
+          } catch(e) { /* ignora errori broadcast */ }
+        });
+      };
+
+      // ── 3) Wrap fetch-shim → Broadcast su cardio_state dopo scrittura ─────
+      // La fetch è già shimmed verso Supabase; la rewrappiamo solo per
+      // il Broadcast che non tocca il DB.
+      var _preFetch = window.fetch;
+      window.fetch = function(url, opts) {
+        if (typeof url === 'string' && url.indexOf('gestione-turni-345c2-default-rtdb') !== -1) {
+          var method = ((opts && opts.method) || 'GET').toUpperCase();
+          if (method === 'PUT' || method === 'PATCH' || method === 'POST') {
+            var path = url
+              .replace('https://gestione-turni-345c2-default-rtdb.europe-west1.firebasedatabase.app/', '')
+              .replace(/\.json(\?.*)?$/, '');
+            return _preFetch(url, opts).then(function(resp) {
+              resp.clone().json().then(function(val) {
+                if (val === null || val === undefined) return;
+                var chKey = ('bc_c_' + path).replace(/[^a-zA-Z0-9]/g, '_').substring(0, 64);
+                var ch = window._bcCardioChs && window._bcCardioChs[chKey];
+                if (ch) {
+                  ch.send({
+                    type: 'broadcast', event: 'state_update',
+                    payload: { data: val, _sid: window._sessionId }
+                  }).catch(function(){});
+                } else {
+                  // Canale non ancora subscribed: crea, iscriviti, invia
+                  var newCh = _sb.channel(chKey);
+                  newCh.subscribe(function(status) {
+                    if (status === 'SUBSCRIBED') {
+                      if (!window._bcCardioChs) window._bcCardioChs = {};
+                      window._bcCardioChs[chKey] = newCh;
+                      newCh.send({
+                        type: 'broadcast', event: 'state_update',
+                        payload: { data: val, _sid: window._sessionId }
+                      }).catch(function(){});
+                    }
+                  });
+                }
+              }).catch(function(){});
+              return resp;
+            });
+          }
+        }
+        return _preFetch(url, opts);
+      };
+
+      // ── 4) Patch firebase.firestore → holter_counts usa Broadcast ─────────
+      // Intercetta PRIMA che il componente React chiami firebase.firestore()
+      // così fsDb riceve la versione patchata.
+      var _origFs = window.firebase.firestore;
+      window.firebase.firestore = function() {
+        var shim = _origFs.call(this);
+        var _origColl = shim.collection.bind(shim);
+        shim.collection = function(collectionName) {
+          var coll = _origColl(collectionName);
+          if (collectionName !== 'holter_counts') return coll;
+
+          var _origDoc = coll.doc.bind(coll);
+          coll.doc = function(docId) {
+            var docObj = _origDoc(docId);
+            docObj.onSnapshot = function(onNext, onError) {
+              // ── Lettura iniziale da Supabase ───────────────────────────
+              _sb.from('holter_counts').select('*').eq('week_key', docId).maybeSingle()
+                .then(function(r) {
+                  onNext({
+                    exists: !!r.data,
+                    data: function() {
+                      if (!r.data) return null;
+                      var d = r.data;
+                      return {
+                        hc: d.hc || {}, hp: d.hp || {}, spiro: d.spiro || {},
+                        pls: d.pls || {}, notes: d.notes || {},
+                        ecgTimes: d.ecg_times || {},
+                        extraHc: d.extra_hc || {}, extraHp: d.extra_hp || {},
+                        extraSp: d.extra_sp || {}, extraPl: d.extra_pl || {},
+                        updatedAt: d.updated_at
+                      };
+                    }
+                  });
+                })
+                .catch(function(e) { if (onError) onError(e); });
+
+              // ── Broadcast listener per aggiornamenti sub-100ms ────────
+              var chKey = ('bc_h_' + docId).replace(/[^a-zA-Z0-9]/g, '_').substring(0, 64);
+              var chH = _sb.channel(chKey)
+                .on('broadcast', { event: 'holter_update' }, function(msg) {
+                  var p = msg.payload;
+                  if (!p || !p.data) return;
+                  if (p._sid && p._sid === window._sessionId) return;
+                  var row = p.data;
+                  var doc = {
+                    exists: !!row,
+                    data: function() {
+                      if (!row) return null;
+                      return {
+                        hc: row.hc || {}, hp: row.hp || {}, spiro: row.spiro || {},
+                        pls: row.pls || {}, notes: row.notes || {},
+                        ecgTimes: row.ecg_times || {},
+                        extraHc: row.extra_hc || {}, extraHp: row.extra_hp || {},
+                        extraSp: row.extra_sp || {}, extraPl: row.extra_pl || {},
+                        updatedAt: row.updated_at
+                      };
+                    }
+                  };
+                  // Rispetta la logica "blocca se utente sta digitando"
+                  if (window._anyCountFocused) {
+                    var _sk = 'holter_counts_' + docId;
+                    window._pendingRealtimeSnap = window._pendingRealtimeSnap || {};
+                    window._pendingRealtimeSnap[_sk] = {
+                      onNext: onNext, doc: doc, dataUpdatedAt: row.updated_at
+                    };
+                    return;
+                  }
+                  onNext(doc);
+                })
+                .subscribe(function(status) {
+                  if (status === 'SUBSCRIBED') {
+                    _bcHolterChs[chKey] = chH;
+                    console.log('[bc] bc_h SUBSCRIBED:', docId);
+                  }
+                });
+
+              return function() {
+                _sb.removeChannel(chH);
+                delete _bcHolterChs[chKey];
+              };
+            };
+            return docObj;
+          };
+          return coll;
+        };
+        return shim;
+      };
+
+      // ── 5) Wrap _fbSaveHolterCounts → Broadcast dopo salvataggio ─────────
+      var _wHolter = window._fbSaveHolterCounts;
+      window._fbSaveHolterCounts = function(weekKey, hc, hp, spiro, pls, notes, ecgTimes, extraHc, extraHp, extraSp, extraPl, dispOverrides) {
+        return _wHolter(weekKey, hc, hp, spiro, pls, notes, ecgTimes, extraHc, extraHp, extraSp, extraPl, dispOverrides)
+          .then(function() {
+            // Legge il row aggiornato e lo broadcast a tutti gli altri client
+            _sb.from('holter_counts').select('*').eq('week_key', weekKey).maybeSingle()
+              .then(function(r) {
+                if (!r.data) return;
+                var chKey = ('bc_h_' + weekKey).replace(/[^a-zA-Z0-9]/g, '_').substring(0, 64);
+                var ch = _bcHolterChs[chKey];
+                var payload = { weekKey: weekKey, data: r.data, _sid: window._sessionId };
+                if (ch) {
+                  ch.send({ type: 'broadcast', event: 'holter_update', payload: payload }).catch(function(){});
+                } else {
+                  _getBcHolterCh(weekKey, function(newCh) {
+                    newCh.send({ type: 'broadcast', event: 'holter_update', payload: payload }).catch(function(){});
+                  });
+                }
+              })
+              .catch(function(){});
+          });
+      };
+
+      // ── 6) Polling di emergenza (60s) — rete di sicurezza ─────────────────
+      // Broadcast copre il 99% dei casi; il polling cattura eventuali messaggi
+      // persi (es. tab inattiva, riconnessione WebSocket).
+      var _cbTurni = null, _cbCards = null, _sseCbs = {};
+      var _tsCache = {}, _initDone = {}, _busy = false;
+
+      var _origFbOnSnapshot = window._fbOnSnapshot;
       window._fbOnSnapshot = function(onTurniChange, onCardsChange) {
         _cbTurni = onTurniChange;
         _cbCards = onCardsChange;
-        return _origFbOnSnapshot(onTurniChange, onCardsChange); // chiama originale
+        return _origFbOnSnapshot(onTurniChange, onCardsChange);
       };
 
-      // ── 2) Intercetta _fbSSE per memorizzare i callback ────────────────
       var _origFbSSE = window._fbSSE;
-      var _sseCbs = {};  // path → callback
-
       window._fbSSE = function(path) {
-        var innerFn = _origFbSSE(path);   // chiama originale
+        var innerFn = _origFbSSE(path);
         return function(cb) {
           _sseCbs[path] = cb;
-          return innerFn(cb);             // chiama originale
+          return innerFn(cb);
         };
       };
 
-      // ── 3) Polling fallback ─────────────────────────────────────────────
-      // Salva i timestamp visti l'ultima volta; se cambiati chiama i callback.
-      var _tsCache = {};   // key → updated_at visto
-      var _initDone = {};  // key → true dopo il primo poll (baseline)
-      var _busy = false;
-
-      async function _pollAll() {
+      async function _pollFallback() {
         if (_busy) return;
         _busy = true;
         try {
-          // — turni_medici/turni + turni_medici/cardiologists ————————————
           if (_cbTurni || _cbCards) {
             var r = await _sb.from('kv_store')
               .select('id, data, updated_at')
@@ -1080,7 +1248,7 @@ body {
             if (r.data) {
               for (var i = 0; i < r.data.length; i++) {
                 var row = r.data[i];
-                var k   = 'kv_' + row.id;
+                var k = 'kv_' + row.id;
                 if (!_initDone[k]) { _initDone[k] = true; _tsCache[k] = row.updated_at; continue; }
                 if (_tsCache[k] === row.updated_at) continue;
                 _tsCache[k] = row.updated_at;
@@ -1096,12 +1264,10 @@ body {
               }
             }
           }
-
-          // — cardio_state paths ————————————————————————————————————————
           var paths = Object.keys(_sseCbs);
           for (var j = 0; j < paths.length; j++) {
             var path = paths[j];
-            var cb   = _sseCbs[path];
+            var cb = _sseCbs[path];
             if (!cb) continue;
             var r2 = await _sb.from('cardio_state')
               .select('data, updated_at')
@@ -1115,24 +1281,21 @@ body {
             cb(r2.data.data);
           }
         } catch(e) {
-          console.warn('[poll-fallback v18b]', e);
+          console.warn('[poll-fallback v19]', e);
         }
         _busy = false;
       }
 
-      // Avvia il polling dopo 10 s (tempo di caricamento iniziale della pagina)
       setTimeout(function() {
-        _pollAll();                                       // baseline immediato
-        setInterval(_pollAll, 30000);                     // poi ogni 30 s
-
-        // Poll immediato quando la tab ritorna visibile
+        _pollFallback();
+        setInterval(_pollFallback, 60000);
         document.addEventListener('visibilitychange', function() {
-          if (document.visibilityState === 'visible') setTimeout(_pollAll, 700);
+          if (document.visibilityState === 'visible') setTimeout(_pollFallback, 700);
         });
       }, 10000);
 
     })();
-    // ── fine PATCH v18b ──────────────────────────────────────────────────────
+    // ── fine PATCH v19 ──────────────────────────────────────────────────────────────────
   </script>
 <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
 
