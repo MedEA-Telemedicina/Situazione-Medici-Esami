@@ -1296,6 +1296,185 @@ body {
 
     })();
     // ── fine PATCH v19 ──────────────────────────────────────────────────────────────────
+
+    // ════════════════════════════════════════════════════════════════════════
+    // PATCH v20 — postgres_changes fallback (affidabilità live garantita)
+    // Broadcast WebSocket della v19 non garantisce la consegna se il client
+    // non è connesso nel momento esatto dell'invio. postgres_changes usa il
+    // WAL di Postgres ed è affidabile come assistenze_realtime_ch già attivo.
+    //
+    // Strategie aggiunte:
+    //   1) postgres_changes su kv_store  → turni + cardiologists
+    //   2) postgres_changes su holter_counts → conteggi holter
+    //   3) postgres_changes su cardio_state  → dati RTDB (settimane, tipi…)
+    //   4) Polling 4s su kv_store come rete di sicurezza finale
+    // ════════════════════════════════════════════════════════════════════════
+    (function() {
+
+      // ── 1+4) Wrap _fbOnSnapshot: postgres_changes su kv_store + poll 4s ──
+      var _cbT4 = null, _cbC4 = null, _busy4 = false, _ts4 = {}, _init4 = {};
+      var _on20 = window._fbOnSnapshot;
+      window._fbOnSnapshot = function(onTurniChange, onCardsChange) {
+        _cbT4 = onTurniChange;
+        _cbC4 = onCardsChange;
+        var unsubOrig = _on20 ? _on20(onTurniChange, onCardsChange) : null;
+
+        // postgres_changes su kv_store (turni + cardiologists)
+        // kv_store ha Realtime abilitato su Supabase (usato da assistenze_realtime_ch)
+        var pgCh = _sb.channel('pg_kv_turni_v20')
+          .on('postgres_changes', {
+            event: '*', schema: 'public', table: 'kv_store',
+            filter: 'id=eq.turni_medici/turni'
+          }, function(p) {
+            if (!p.new || !p.new.data || !p.new.data.lista) return;
+            if (p.new.data._sid && p.new.data._sid === window._sessionId) return;
+            window._turniBase = JSON.parse(JSON.stringify(p.new.data.lista));
+            onTurniChange(p.new.data.lista);
+          })
+          .on('postgres_changes', {
+            event: '*', schema: 'public', table: 'kv_store',
+            filter: 'id=eq.turni_medici/cardiologists'
+          }, function(p) {
+            if (!p.new || !p.new.data || !p.new.data.lista) return;
+            if (p.new.data._sid && p.new.data._sid === window._sessionId) return;
+            window._cardsBase = JSON.parse(JSON.stringify(p.new.data.lista));
+            onCardsChange(p.new.data.lista);
+          })
+          .subscribe(function(status) {
+            if (status === 'SUBSCRIBED') console.log('[v20] pg kv_store SUBSCRIBED');
+          });
+        window._pgKvTurniCh = pgCh;
+
+        return function() {
+          if (unsubOrig) unsubOrig();
+          if (window._pgKvTurniCh) {
+            try { _sb.removeChannel(window._pgKvTurniCh); } catch(e) {}
+            window._pgKvTurniCh = null;
+          }
+        };
+      };
+
+      // Polling 4s: rete di sicurezza aggiuntiva per turni/cardiologists
+      async function _poll4s() {
+        if (_busy4 || (!_cbT4 && !_cbC4)) return;
+        _busy4 = true;
+        try {
+          var r = await _sb.from('kv_store')
+            .select('id, data, updated_at')
+            .in('id', ['turni_medici/turni', 'turni_medici/cardiologists']);
+          if (r.data) {
+            r.data.forEach(function(row) {
+              var k = 'p4s_' + row.id;
+              if (!_init4[k]) { _init4[k] = true; _ts4[k] = row.updated_at; return; }
+              if (_ts4[k] === row.updated_at) return;
+              _ts4[k] = row.updated_at;
+              if (!row.data || !row.data.lista) return;
+              if (row.data._sid && row.data._sid === window._sessionId) return;
+              if (row.id === 'turni_medici/turni' && _cbT4) {
+                window._turniBase = JSON.parse(JSON.stringify(row.data.lista));
+                _cbT4(row.data.lista);
+              } else if (row.id === 'turni_medici/cardiologists' && _cbC4) {
+                window._cardsBase = JSON.parse(JSON.stringify(row.data.lista));
+                _cbC4(row.data.lista);
+              }
+            });
+          }
+        } catch(e) { /* ignora */ }
+        _busy4 = false;
+      }
+      setTimeout(function() { _poll4s(); setInterval(_poll4s, 4000); }, 5000);
+
+      // ── 2) firebase.firestore: aggiunge postgres_changes su holter_counts ─
+      var _fs20 = window.firebase.firestore;
+      window.firebase.firestore = function() {
+        var shim = _fs20.call(this);
+        var _cOrig = shim.collection.bind(shim);
+        shim.collection = function(colName) {
+          var coll = _cOrig(colName);
+          if (colName !== 'holter_counts') return coll;
+          var _dOrig = coll.doc.bind(coll);
+          coll.doc = function(docId) {
+            var dobj = _dOrig(docId);
+            var _snapOrig = dobj.onSnapshot ? dobj.onSnapshot.bind(dobj) : null;
+            dobj.onSnapshot = function(onNext, onError) {
+              var unsubSnap = _snapOrig ? _snapOrig(onNext, onError) : null;
+              var pgKey = ('pg_h_v20_' + docId).replace(/[^a-zA-Z0-9]/g, '_').substring(0, 64);
+              var pgH = _sb.channel(pgKey)
+                .on('postgres_changes', {
+                  event: '*', schema: 'public', table: 'holter_counts',
+                  filter: 'week_key=eq.' + docId
+                }, function(p) {
+                  if (!p.new) return;
+                  if (p.new.updated_at && window._lastSavedUpdatedAt &&
+                      p.new.updated_at <= window._lastSavedUpdatedAt) return;
+                  var row = p.new;
+                  var doc = {
+                    exists: true,
+                    data: function() {
+                      return {
+                        hc: row.hc || {}, hp: row.hp || {}, spiro: row.spiro || {},
+                        pls: row.pls || {}, notes: row.notes || {},
+                        ecgTimes: row.ecg_times || {},
+                        extraHc: row.extra_hc || {}, extraHp: row.extra_hp || {},
+                        extraSp: row.extra_sp || {}, extraPl: row.extra_pl || {},
+                        updatedAt: row.updated_at
+                      };
+                    }
+                  };
+                  if (window._anyCountFocused) {
+                    var _sk = 'holter_counts_' + docId;
+                    window._pendingRealtimeSnap = window._pendingRealtimeSnap || {};
+                    window._pendingRealtimeSnap[_sk] = {
+                      onNext: onNext, doc: doc, dataUpdatedAt: row.updated_at
+                    };
+                    return;
+                  }
+                  onNext(doc);
+                })
+                .subscribe(function(status) {
+                  if (status === 'SUBSCRIBED')
+                    console.log('[v20] pg holter_counts SUBSCRIBED:', docId);
+                });
+              return function() {
+                if (unsubSnap) unsubSnap();
+                try { _sb.removeChannel(pgH); } catch(e) {}
+              };
+            };
+            return dobj;
+          };
+          return coll;
+        };
+        return shim;
+      };
+
+      // ── 3) _fbSSE: aggiunge postgres_changes su cardio_state ─────────────
+      var _sse20 = window._fbSSE;
+      window._fbSSE = function(path) {
+        var innerFn = _sse20 ? _sse20(path) : function(cb) { return function() {}; };
+        return function(cb) {
+          var unsubInner = innerFn(cb);
+          var pgCsKey = ('pg_cs_' + path).replace(/[^a-zA-Z0-9]/g, '_').substring(0, 64);
+          var pgCs = _sb.channel(pgCsKey)
+            .on('postgres_changes', {
+              event: '*', schema: 'public', table: 'cardio_state',
+              filter: 'path=eq.' + path
+            }, function(p) {
+              if (!p.new || p.new.data === undefined || p.new.data === null) return;
+              cb(p.new.data);
+            })
+            .subscribe(function(status) {
+              if (status === 'SUBSCRIBED')
+                console.log('[v20] pg cardio_state SUBSCRIBED:', path);
+            });
+          return function() {
+            if (unsubInner) unsubInner();
+            try { _sb.removeChannel(pgCs); } catch(e) {}
+          };
+        };
+      };
+
+    })();
+    // ── fine PATCH v20 ──────────────────────────────────────────────────────────────────
   </script>
 <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
 
