@@ -16,7 +16,7 @@
     // sia la cache del browser sia quella CDN di GitHub Pages.
     // ⚠ Incrementa V ad ogni deploy (v22 → v23 ecc.)
     (function() {
-      var V = 'v23';
+      var V = 'v24';
       var k = '_page_ver';
       try {
         var prev = localStorage.getItem(k);
@@ -28,7 +28,7 @@
       } catch(e) {}
     })();
     </script>
-    <title>Situazione Medici</title><!-- v23 -->
+    <title>Situazione Medici</title><!-- v24 -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5" type="text/css" />
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -25085,12 +25085,11 @@ body {
           // NB: NON azzeriamo _holterLocalDirty qui — la rimozione selettiva
           // è già fatta dentro _fbSaveHolterCounts.then() per preservare
           // le chiavi aggiunte dall'utente durante il save in volo.
-          // Salviamo il riferimento al timer corrente per confrontarlo dopo il delay
-          var _timerAtSave = saveTimer.current;
+          // FIX v24: azzerato direttamente (condizione precedente era sempre false)
           saveTimer.current = null;
           setTimeout(function() {
-            // Riattiva snapshot SOLO se nessun nuovo save è stato schedulato nel frattempo
-            if (!saveTimer.current && saveTimer.current === _timerAtSave) {
+            // Riattiva snapshot solo se nessun nuovo save e' in coda
+            if (!saveTimer.current) {
               ignoreSnap.current = false;
               // Se è arrivato uno snapshot remoto durante la finestra di ignore,
               // rilegge il DB per ottenere lo stato completamente aggiornato (merge incluso).
@@ -25210,12 +25209,12 @@ body {
         onClick: function(e) { e.stopPropagation(); setNoteModal({ key: noteKey, name: displayName, note: note, mode: "view" }); },
         style: { cursor: "pointer", color: "#eab308", fontSize: "11px", flexShrink: 0, lineHeight: 1, display: "inline-flex", alignItems: "center" },
         children: "●"
-      }) : null;
+      }, "dot") : null;
       var nameSpan = (0, _j)("span", {
         onClick: function(e) { e.stopPropagation(); setNoteModal({ key: noteKey, name: displayName, note: note || "", mode: "edit" }); },
         style: { cursor: "pointer" },
         children: nameEl
-      });
+      }, "name");
       return (0, _js)("span", { style: { display: "inline-flex", alignItems: "center", gap: "4px" }, children: [dot, nameSpan] });
     }
 
@@ -25785,7 +25784,7 @@ body {
         className: "m-doc-wrap",
         onMouseEnter: function() { if (window._showDocTip) window._showDocTip(tipData); },
         onMouseLeave: function() { if (window._hideDocTip) window._hideDocTip(); },
-        children: [nameEl]
+        children: nameEl
       });
     }
     function flatRow(cells, rowKey, extraStyle, rowIndex) {
