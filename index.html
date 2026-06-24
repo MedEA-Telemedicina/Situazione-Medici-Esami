@@ -396,7 +396,15 @@ body {
     const SUPABASE_URL      = 'https://qevegoxoryjjibdwvpps.supabase.co';        // es. https://xxxx.supabase.co
     const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFldmVnb3hvcnlqamliZHd2cHBzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkyNjY5MTYsImV4cCI6MjA5NDg0MjkxNn0.kioXrmXVckUMt_jGa8l3VwMKYaMpoKsQXyqwMk2aZZY';  // chiave pubblica anon
 
-    const _sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    const _sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      realtime: {
+        heartbeatIntervalMs: 15000,
+        reconnectAfterMs: function(tries) {
+          return [1000, 2000, 5000, 10000][tries - 1] || 10000;
+        },
+        timeout: 20000
+      }
+    });
     window._sb = _sb;
 
     // ── Salva gli orari ECG effettivi (default + editati) su Supabase ────────
@@ -916,26 +924,45 @@ body {
 
     // ── _fbOnSnapshot: turni + cardiologists via Broadcast ───────────────────
     window._fbOnSnapshot = function(onTurniChange, onCardsChange) {
-      var ch = _sb.channel('bc_turni_realtime')
-        .on('broadcast', { event: 'turni_update' }, function(msg) {
-          var p = msg.payload;
-          if (!p || !p.lista) return;
-          if (p._sid && p._sid === window._sessionId) return;
-          window._turniBase = JSON.parse(JSON.stringify(p.lista));
-          onTurniChange(p.lista);
-        })
-        .on('broadcast', { event: 'cards_update' }, function(msg) {
-          var p = msg.payload;
-          if (!p || !p.lista) return;
-          if (p._sid && p._sid === window._sessionId) return;
-          window._cardsBase = JSON.parse(JSON.stringify(p.lista));
-          onCardsChange(p.lista);
-        })
-        .subscribe(function(status) {
-          if (status === 'SUBSCRIBED') console.log('[bc] bc_turni_realtime SUBSCRIBED');
-        });
-      window._bcTurniCh = ch;
-      return function() { _sb.removeChannel(ch); window._bcTurniCh = null; };
+      var _bcTurniActive = true;
+      var ch;
+
+      function _turniHandler(msg) {
+        var p = msg.payload;
+        if (!p || !p.lista) return;
+        if (p._sid && p._sid === window._sessionId) return;
+        window._turniBase = JSON.parse(JSON.stringify(p.lista));
+        onTurniChange(p.lista);
+      }
+      function _cardsHandler(msg) {
+        var p = msg.payload;
+        if (!p || !p.lista) return;
+        if (p._sid && p._sid === window._sessionId) return;
+        window._cardsBase = JSON.parse(JSON.stringify(p.lista));
+        onCardsChange(p.lista);
+      }
+      function _subscribeTurniCh() {
+        if (!_bcTurniActive) return;
+        ch = _sb.channel('bc_turni_realtime')
+          .on('broadcast', { event: 'turni_update' }, _turniHandler)
+          .on('broadcast', { event: 'cards_update' }, _cardsHandler)
+          .subscribe(function(status) {
+            if (status === 'SUBSCRIBED') {
+              window._bcTurniCh = ch;
+              console.log('[bc] bc_turni_realtime SUBSCRIBED');
+            } else if (
+              (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED')
+              && _bcTurniActive
+            ) {
+              console.warn('[bc] bc_turni_realtime error (' + status + '), reconnect in 3s');
+              try { _sb.removeChannel(ch); } catch(e2) {}
+              window._bcTurniCh = null;
+              setTimeout(_subscribeTurniCh, 3000);
+            }
+          });
+      }
+      _subscribeTurniCh();
+      return function() { _bcTurniActive = false; try { _sb.removeChannel(ch); } catch(e2) {} window._bcTurniCh = null; };
     };
 
     // ── _fbSSE: cardio_state paths via Broadcast ──────────────────────────────
@@ -1160,47 +1187,74 @@ body {
 
               // ── Broadcast listener per aggiornamenti sub-100ms ────────
               var chKey = ('bc_h_' + docId).replace(/[^a-zA-Z0-9]/g, '_').substring(0, 64);
-              var chH = _sb.channel(chKey)
-                .on('broadcast', { event: 'holter_update' }, function(msg) {
-                  var p = msg.payload;
-                  if (!p || !p.data) return;
-                  if (p._sid && p._sid === window._sessionId) return;
-                  var row = p.data;
-                  var doc = {
-                    exists: !!row,
-                    data: function() {
-                      if (!row) return null;
-                      return {
-                        hc: row.hc || {}, hp: row.hp || {}, spiro: row.spiro || {},
-                        pls: row.pls || {}, notes: row.notes || {},
-                        ecgTimes: row.ecg_times || {},
-                        extraHc: row.extra_hc || {}, extraHp: row.extra_hp || {},
-                        extraSp: row.extra_sp || {}, extraPl: row.extra_pl || {},
-                        updatedAt: row.updated_at
-                      };
-                    }
-                  };
-                  // Rispetta la logica "blocca se utente sta digitando"
-                  if (window._anyCountFocused) {
-                    var _sk = 'holter_counts_' + docId;
-                    window._pendingRealtimeSnap = window._pendingRealtimeSnap || {};
-                    window._pendingRealtimeSnap[_sk] = {
-                      onNext: onNext, doc: doc, dataUpdatedAt: row.updated_at
+
+              // Registra callback per il polling di fallback holter
+              if (!window._hcOnNextCbs) window._hcOnNextCbs = {};
+              window._hcOnNextCbs[docId] = { fn: onNext, ts: null, init: false };
+
+              function _makeHolterBroadcastDoc(row) {
+                return {
+                  exists: !!row,
+                  data: function() {
+                    if (!row) return null;
+                    return {
+                      hc: row.hc || {}, hp: row.hp || {}, spiro: row.spiro || {},
+                      pls: row.pls || {}, notes: row.notes || {},
+                      ecgTimes: row.ecg_times || {},
+                      extraHc: row.extra_hc || {}, extraHp: row.extra_hp || {},
+                      extraSp: row.extra_sp || {}, extraPl: row.extra_pl || {},
+                      updatedAt: row.updated_at
                     };
-                    return;
                   }
-                  onNext(doc);
-                })
-                .subscribe(function(status) {
-                  if (status === 'SUBSCRIBED') {
-                    _bcHolterChs[chKey] = chH;
-                    console.log('[bc] bc_h SUBSCRIBED:', docId);
-                  }
-                });
+                };
+              }
+
+              function _holterBroadcastHandler(msg) {
+                var p = msg.payload;
+                if (!p || !p.data) return;
+                if (p._sid && p._sid === window._sessionId) return;
+                var row = p.data;
+                var doc = _makeHolterBroadcastDoc(row);
+                if (window._anyCountFocused) {
+                  var _sk = 'holter_counts_' + docId;
+                  window._pendingRealtimeSnap = window._pendingRealtimeSnap || {};
+                  window._pendingRealtimeSnap[_sk] = {
+                    onNext: onNext, doc: doc, dataUpdatedAt: row.updated_at
+                  };
+                  return;
+                }
+                onNext(doc);
+              }
+
+              var _chHolterActive = true;
+              var chH;
+
+              function _subscribeHolterBc() {
+                if (!_chHolterActive) return;
+                chH = _sb.channel(chKey)
+                  .on('broadcast', { event: 'holter_update' }, _holterBroadcastHandler)
+                  .subscribe(function(status) {
+                    if (status === 'SUBSCRIBED') {
+                      _bcHolterChs[chKey] = chH;
+                      console.log('[bc] bc_h SUBSCRIBED:', docId);
+                    } else if (
+                      (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED')
+                      && _chHolterActive
+                    ) {
+                      console.warn('[bc] bc_h error (' + status + '), reconnect in 3s:', docId);
+                      try { _sb.removeChannel(chH); } catch(e2) {}
+                      delete _bcHolterChs[chKey];
+                      setTimeout(_subscribeHolterBc, 3000);
+                    }
+                  });
+              }
+              _subscribeHolterBc();
 
               return function() {
-                _sb.removeChannel(chH);
+                _chHolterActive = false;
+                try { _sb.removeChannel(chH); } catch(e2) {}
                 delete _bcHolterChs[chKey];
+                if (window._hcOnNextCbs) delete window._hcOnNextCbs[docId];
               };
             };
             return docObj;
@@ -1299,6 +1353,44 @@ body {
             _tsCache[k2] = r2.data.updated_at;
             cb(r2.data.data);
           }
+          // ── Polling holter_counts (fallback per consuntivo) ─────────
+          var hcKeys = Object.keys(window._hcOnNextCbs || {});
+          for (var h = 0; h < hcKeys.length; h++) {
+            var hcId = hcKeys[h];
+            var hcEntry = window._hcOnNextCbs[hcId];
+            if (!hcEntry || !hcEntry.fn) continue;
+            var hcRes = await _sb.from('holter_counts')
+              .select('hc,hp,spiro,pls,notes,ecg_times,extra_hc,extra_hp,extra_sp,extra_pl,updated_at')
+              .eq('week_key', hcId)
+              .maybeSingle();
+            if (!hcRes.data) continue;
+            var hcRow = hcRes.data;
+            if (!hcEntry.init) { hcEntry.init = true; hcEntry.ts = hcRow.updated_at; continue; }
+            if (hcEntry.ts === hcRow.updated_at) continue;
+            hcEntry.ts = hcRow.updated_at;
+            var hcDoc = {
+              exists: true,
+              data: function() {
+                return {
+                  hc: hcRow.hc || {}, hp: hcRow.hp || {}, spiro: hcRow.spiro || {},
+                  pls: hcRow.pls || {}, notes: hcRow.notes || {},
+                  ecgTimes: hcRow.ecg_times || {},
+                  extraHc: hcRow.extra_hc || {}, extraHp: hcRow.extra_hp || {},
+                  extraSp: hcRow.extra_sp || {}, extraPl: hcRow.extra_pl || {},
+                  updatedAt: hcRow.updated_at
+                };
+              }
+            };
+            if (window._anyCountFocused) {
+              var _psk = 'holter_counts_' + hcId;
+              window._pendingRealtimeSnap = window._pendingRealtimeSnap || {};
+              window._pendingRealtimeSnap[_psk] = {
+                onNext: hcEntry.fn, doc: hcDoc, dataUpdatedAt: hcRow.updated_at
+              };
+            } else {
+              hcEntry.fn(hcDoc);
+            }
+          }
         } catch(e) {
           console.warn('[poll-fallback v19]', e);
         }
@@ -1307,9 +1399,13 @@ body {
 
       setTimeout(function() {
         _pollFallback();
-        setInterval(_pollFallback, 60000);
+        setInterval(_pollFallback, 15000);
         document.addEventListener('visibilitychange', function() {
-          if (document.visibilityState === 'visible') setTimeout(_pollFallback, 700);
+          if (document.visibilityState === 'visible') setTimeout(_pollFallback, 500);
+        });
+        window.addEventListener('online', function() {
+          console.log('[poll] network online → poll immediato');
+          setTimeout(_pollFallback, 800);
         });
       }, 10000);
 
