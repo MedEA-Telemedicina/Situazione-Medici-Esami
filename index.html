@@ -25828,7 +25828,7 @@ body {
               var c = available.find(function(x){ return x.name === e.target.value; });
               if (!c) return;
               setOpenState({ step: 2, selected: c });
-            }, children: [(0, _j)("option", { value: "", children: "Scegli medico..." })].concat(available.map(function(a,i){ return (0, _j)("option", { key: i, value: a.name, children: a.surname ? (a.surname + " " + (a.firstname||"")) : a.name }); })) }),
+            }, children: [(0, _j)("option", { value: "", children: "Scegli medico..." })].concat(available.map(function(a,i){ return (0, _j)("option", { value: a.name, children: a.surname ? (a.surname + " " + (a.firstname||"")) : a.name }, i); })) }),
             (0, _j)("button", { style: { fontSize: "11px", padding: "2px 6px", border: "1px solid rgba(0,0,0,0.1)", borderRadius: "6px", background: "transparent", cursor: "pointer", color: "rgba(0,0,0,0.4)" }, onClick: function(){ setOpenState(null); }, children: "\u2715" })
           ] })
         });
@@ -26124,9 +26124,9 @@ body {
                       });
                       // ── Domenica: mostra medici holter domenica quando è sabato ──
                       if (dayIdx === 5 && holterDocsSunday.length > 0) {
-                        htRows.push((0, _j)("tr", { key: "sun_sep", style: { background: "rgba(139,92,246,0.05)" }, children:
+                        htRows.push((0, _j)("tr", { style: { background: "rgba(139,92,246,0.05)" }, children:
                           (0, _j)("td", { colSpan: 3, style: { padding: "5px 8px", textAlign: "center", fontSize: "10px", fontWeight: "700", color: "#8b5cf6", fontStyle: "italic", letterSpacing: "0.4px", borderTop: "1.5px dashed rgba(139,92,246,0.3)", borderBottom: "1px solid rgba(139,92,246,0.15)" }, children: "Domenica" })
-                        }));
+                        }, "sun_sep"));
                         holterDocsSunday.forEach(function(d, i) {
                           var _cMsun = _matchCardiologo(d.key, cardiologi) || {};
                           var dExtraSun = (vercelData.doctorExtra || {})[d.key] || {};
