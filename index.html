@@ -787,6 +787,21 @@ body {
       var dbLista = (row && row.data && row.data.lista) ? row.data.lista : updated;
       var dbTs    = row ? row.updated_at : null;
       var merged  = _mergeArraysThreeWay(window._cardsBase, updated, dbLista);
+      // FIX v30: deduplicazione per name/vercelName prima di salvare
+      // (evita duplicati da salvataggi concorrenti con 20+ utenti)
+      merged = (function(arr) {
+        var seen = new Map();
+        arr.forEach(function(doc) {
+          var k = ((doc.vercelName || doc.name || '') + '').toUpperCase().trim();
+          if (!k) return; // ignora entry vuote prodotte dal merge per indice
+          if (!seen.has(k)) { seen.set(k, doc); }
+          else {
+            var ex = seen.get(k);
+            if (ex.nuovo && !doc.nuovo) seen.set(k, doc); // preferisci versione editata
+          }
+        });
+        return Array.from(seen.values());
+      })(merged);
       var newTs   = new Date().toISOString();
       var newData = { lista: merged, _sid: window._sessionId };
       var written = false;
@@ -26663,7 +26678,16 @@ body {
           setData(function(prev) { return prev ? Object.assign({}, prev, { turni: newTurni }) : prev; });
         },
         function(newCards) {
-          setData(function(prev) { return prev ? Object.assign({}, prev, { cardiologists: newCards }) : prev; });
+          // FIX v30: deduplication UI — non mostrare duplicati anche se presenti nel DB
+          var dedupedCards = (function(arr) {
+            var seen = new Set();
+            return (arr || []).filter(function(doc) {
+              var k = ((doc.vercelName || doc.name || '') + '').toUpperCase().trim();
+              if (!k || seen.has(k)) return false;
+              seen.add(k); return true;
+            });
+          })(newCards);
+          setData(function(prev) { return prev ? Object.assign({}, prev, { cardiologists: dedupedCards }) : prev; });
         }
       ) : null;
       return function() { if (unsub) unsub(); };
