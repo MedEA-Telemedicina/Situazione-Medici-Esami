@@ -448,6 +448,10 @@ body {
           e.target.classList.contains('m-count-input')) {
         window._anyCountFocused = true;
       }
+      // FIX v31: traccia focus su qualsiasi input — protegge da sovrascrittura testo
+      if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.contentEditable === 'true')) {
+        window._anyInputFocused = true;
+      }
     }, true);
 
     document.addEventListener('focusout', function(e) {
@@ -474,6 +478,22 @@ body {
             }, 350);
           }
         }, 60);
+      }
+      // FIX v31: quando l'utente smette di digitare in qualsiasi campo,
+      // applica l'eventuale aggiornamento turni in attesa
+      if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.contentEditable === 'true')) {
+        setTimeout(function() {
+          var ae = document.activeElement;
+          var stillAny = !!(ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.contentEditable === 'true'));
+          window._anyInputFocused = stillAny;
+          if (!stillAny && window._pendingTurniSnap) {
+            var snap = window._pendingTurniSnap;
+            window._pendingTurniSnap = null;
+            setTimeout(function() {
+              if (window._applyTurniUpdate) window._applyTurniUpdate(snap);
+            }, 150);
+          }
+        }, 80);
       }
     }, true);
 
@@ -1569,9 +1589,14 @@ body {
               }
 
               // FIX v30: riconnessione automatica su CHANNEL_ERROR / TIMED_OUT / CLOSED
+              var _pgRetry = 0;
               function _subscribePgHolter() {
                 if (!_pgHActive) return;
-                pgH = _sb.channel(pgKey)
+                _pgRetry++;
+                // FIX v31: nome canale univoco ad ogni tentativo — evita
+                // "cannot add callbacks after subscribe()" se Supabase
+                // non ha ancora rimosso internamente il canale precedente
+                pgH = _sb.channel(pgKey + (_pgRetry > 1 ? ('_r' + _pgRetry) : ''))
                   .on('postgres_changes', {
                     event: '*', schema: 'public', table: 'holter_counts',
                     filter: 'week_key=eq.' + docId
@@ -26696,8 +26721,20 @@ body {
       // Initial load
       loadData();
       // Real-time listeners for live sync across operators
+      // FIX v31: registra setter globale — usato dal focusout handler per
+      // applicare aggiornamenti turni deferred senza perdere il riferimento React
+      window._applyTurniUpdate = function(t) {
+        setTurni(t);
+        setData(function(prev) { return prev ? Object.assign({}, prev, { turni: t }) : prev; });
+      };
       var unsub = window._fbOnSnapshot ? window._fbOnSnapshot(
         function(newTurni) {
+          // FIX v31: se un utente sta scrivendo, bufferizza l'aggiornamento
+          // invece di sovrascrivere immediatamente — EVITA LA CANCELLAZIONE DEL TESTO
+          if (window._anyInputFocused) {
+            window._pendingTurniSnap = newTurni;
+            return;
+          }
           setTurni(newTurni);
           setData(function(prev) { return prev ? Object.assign({}, prev, { turni: newTurni }) : prev; });
         },
