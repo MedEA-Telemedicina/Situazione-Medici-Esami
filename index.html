@@ -497,12 +497,19 @@ body {
         window._lastUserInputAt = Date.now();
       }
     }, true);
-    // Controlla ogni 5s: se l'utente è inattivo da ≥15s, applica i turni pending
+    // FIX v34: applica pending turni SOLO quando:
+    // 1. nessun input attivo, E
+    // 2. nessuna modifica non salvata (lastInput <= lastSave)
+    // Nessun timeout arbitrario — la condizione è puramente basata sullo stato.
     setInterval(function() {
-      if (window._pendingTurniSnap &&
-          (Date.now() - (window._lastUserInputAt || 0) >= 15000)) {
+      var _noFocus  = !window._anyInputFocused;
+      var _noUnsaved = !((window._lastUserInputAt || 0) > (window._lastSaveTurniAt || 0));
+      if (window._pendingTurniSnap && _noFocus && _noUnsaved) {
         var snap = window._pendingTurniSnap;
+        var base = window._pendingTurniBase || snap;
         window._pendingTurniSnap = null;
+        window._pendingTurniBase = null;
+        window._turniBase = JSON.parse(JSON.stringify(base)); // aggiorna base ora
         if (window._applyTurniUpdate) window._applyTurniUpdate(snap);
       }
     }, 5000);
@@ -981,7 +988,10 @@ body {
         var p = msg.payload;
         if (!p || !p.lista) return;
         if (p._sid && p._sid === window._sessionId) return;
-        window._turniBase = JSON.parse(JSON.stringify(p.lista));
+        // FIX v35: _turniBase NON va aggiornato qui — viene aggiornato dal componente
+        // React SOLO se l'utente non ha modifiche in corso (dirty=false, focus=false).
+        // Aggiornarlo qui prima sovrascriveva la base di editing dell'utente, rendendo
+        // il 3-way merge incapace di distinguere le sue modifiche da quelle del collega.
         onTurniChange(p.lista);
       }
       function _cardsHandler(msg) {
@@ -1378,7 +1388,7 @@ body {
                 if (!row.data || !row.data.lista) continue;
                 if (row.data._sid && row.data._sid === window._sessionId) continue;
                 if (row.id === 'turni_medici/turni' && _cbTurni) {
-                  window._turniBase = JSON.parse(JSON.stringify(row.data.lista));
+                  // FIX v35: non aggiornare _turniBase qui, lo gestisce il componente React
                   _cbTurni(row.data.lista);
                 } else if (row.id === 'turni_medici/cardiologists' && _cbCards) {
                   window._cardsBase = JSON.parse(JSON.stringify(row.data.lista));
@@ -1493,7 +1503,7 @@ body {
           }, function(p) {
             if (!p.new || !p.new.data || !p.new.data.lista) return;
             if (p.new.data._sid && p.new.data._sid === window._sessionId) return;
-            window._turniBase = JSON.parse(JSON.stringify(p.new.data.lista));
+            // FIX v35: non aggiornare _turniBase qui, lo gestisce il componente React
             onTurniChange(p.new.data.lista);
           })
           .on('postgres_changes', {
@@ -1536,7 +1546,7 @@ body {
               if (!row.data || !row.data.lista) return;
               if (row.data._sid && row.data._sid === window._sessionId) return;
               if (row.id === 'turni_medici/turni' && _cbT4) {
-                window._turniBase = JSON.parse(JSON.stringify(row.data.lista));
+                // FIX v35: non aggiornare _turniBase qui, lo gestisce il componente React
                 _cbT4(row.data.lista);
               } else if (row.id === 'turni_medici/cardiologists' && _cbC4) {
                 window._cardsBase = JSON.parse(JSON.stringify(row.data.lista));
@@ -26739,13 +26749,37 @@ body {
       };
       var unsub = window._fbOnSnapshot ? window._fbOnSnapshot(
         function(newTurni) {
-          // FIX v32: se l'utente ha premuto un tasto negli ultimi 15s, bufferizza.
-          // Il buffer viene svuotato: dal timer ogni 5s (dopo 15s inattività)
-          // oppure subito dopo handleSaveTurni (utente ha appena salvato).
-          if (Date.now() - (window._lastUserInputAt || 0) < 15000) {
+          // FIX v34 — SOLUZIONE DEFINITIVA:
+          // Il problema storico era usare un timeout (30s) come proxy per
+          // "nessuna modifica non salvata". Non funziona: l'utente può stare
+          // fermo > 30s senza aver salvato (sta leggendo, sta pensando).
+          //
+          // Strategia corretta: bufferizza SE campo attivo O se l'utente ha
+          // premuto un tasto DOPO l'ultimo salvataggio esplicito.
+          // _lastSaveTurniAt viene aggiornato SOLO in handleSaveTurni e loadData.
+          // _lastUserInputAt viene aggiornato su ogni keydown/input dell'app.
+          //
+          // Condizione: (lastInput > lastSave) significa "ci sono modifiche
+          // non salvate" — è deterministica e non dipende dal tempo assoluto.
+          //
+          // Bonus: quando si bufferizza, ripristiniamo _turniBase al valore
+          // che aveva PRIMA dell'aggiornamento remote. In questo modo il
+          // 3-way merge al salvataggio usa la base giusta (quella da cui
+          // l'utente ha iniziato a modificare), evitando sovrascritture
+          // accidentali delle modifiche dei colleghi.
+          // FIX v35: _isDirty = l'utente ha battuto un tasto dopo l'ultimo salvataggio.
+          // Se dirty o campo attivo → bufferizza l'aggiornamento senza toccare _turniBase.
+          // _turniBase rimane la versione da cui l'utente sta modificando: il 3-way merge
+          // al salvataggio può così calcolare correttamente il delta dell'utente vs DB.
+          // Se non dirty → aggiorna _turniBase e applica subito all'UI.
+          var _isDirty = (window._lastUserInputAt || 0) > (window._lastSaveTurniAt || 0);
+          if (window._anyInputFocused || _isDirty) {
             window._pendingTurniSnap = newTurni;
+            window._pendingTurniBase = JSON.parse(JSON.stringify(newTurni));
             return;
           }
+          // Nessuna modifica in corso: ora è sicuro avanzare la base e aggiornare l'UI.
+          window._turniBase = JSON.parse(JSON.stringify(newTurni));
           setTurni(newTurni);
           setData(function(prev) { return prev ? Object.assign({}, prev, { turni: newTurni }) : prev; });
         },
@@ -26787,6 +26821,9 @@ body {
         const parsed = await window._fbLoadData();
         setTurni(parsed.turni);
         setData(parsed);
+        // FIX v34: al caricamento iniziale lo stato è pulito — aggiorna il
+        // timestamp "ultimo salvataggio" così il dirty check parte da zero.
+        window._lastSaveTurniAt = Date.now();
         const giorni = ["LUNEDI'", "MARTEDI'", "MERCOLEDI'", "GIOVEDI'", "VENERDI'", "SABATO", "DOMENICA"];
         const today = (/* @__PURE__ */ new Date()).getDay();
         const dayMap = [6, 0, 1, 2, 3, 4, 5];
@@ -26807,16 +26844,21 @@ body {
       }
     }
     async function handleSaveTurni(updated) {
+      // FIX v34: marca lo stato come "pulito" prima del save.
+      // _lastSaveTurniAt >= _lastUserInputAt → dirty = false → il buffer si svuota.
+      window._lastSaveTurniAt = Date.now();
       setTurni(updated);
       setData((prev) => prev ? { ...prev, turni: updated } : null);
       await window._fbSaveTurni(updated);
-      // FIX v32: dopo il salvataggio, azzera il timer di inattività e
-      // applica subito gli aggiornamenti dei colleghi in attesa
-      window._lastUserInputAt = 0;
+      // Dopo il salvataggio: applica subito eventuali aggiornamenti dei colleghi
+      // in coda (ora che lo stato è pulito, il buffer può essere svuotato).
       setTimeout(function() {
         if (window._pendingTurniSnap) {
           var snap = window._pendingTurniSnap;
+          var base = window._pendingTurniBase || snap;
           window._pendingTurniSnap = null;
+          window._pendingTurniBase = null;
+          window._turniBase = JSON.parse(JSON.stringify(base));
           if (window._applyTurniUpdate) window._applyTurniUpdate(snap);
         }
       }, 600);
