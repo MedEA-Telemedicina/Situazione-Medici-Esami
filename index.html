@@ -507,8 +507,11 @@ body {
       if (window._pendingTurniSnap && _noFocus && _noUnsaved) {
         var snap = window._pendingTurniSnap;
         var base = window._pendingTurniBase || snap;
+        // FIX v36: avanza la revisione insieme allo snapshot applicato
+        if (window._pendingTurniRev) window._turniRev = Math.max(window._turniRev || 0, window._pendingTurniRev);
         window._pendingTurniSnap = null;
         window._pendingTurniBase = null;
+        window._pendingTurniRev = 0;
         window._turniBase = JSON.parse(JSON.stringify(base)); // aggiorna base ora
         if (window._applyTurniUpdate) window._applyTurniUpdate(snap);
       }
@@ -707,6 +710,12 @@ body {
     // caricata dal DB, così da distinguere le modifiche locali da quelle remote.
     window._turniBase = null;
     window._cardsBase = null;
+    // FIX v36 — versionamento a revisioni: _turniRev = revisione dello stato DB
+    // già incorporato in UI/base. Ogni scrittura incrementa _rev (serializzato
+    // dal lock ottimistico → immune da orologi sfasati tra client).
+    window._turniRev = 0;
+    window._pendingTurniRev = 0;
+    window._lastTurniMerged = null;
 
     // Merge a 3 vie di array di oggetti: base=stato iniziale DB, local=modifiche
     // dell'utente corrente, db=stato attuale DB al momento del salvataggio.
@@ -756,6 +765,8 @@ body {
         // Imposta la base per il 3-way merge
         window._turniBase = JSON.parse(JSON.stringify(turni));
         window._cardsBase = JSON.parse(JSON.stringify(cardiologists));
+        // FIX v36: memorizza la revisione corrente per il gating degli update
+        window._turniRev = (turniRow && turniRow.data && turniRow.data._rev) || 0;
         return { turni: turni, cardiologists: cardiologists };
       } catch(e) { console.error('Supabase loadData error:', e); throw e; }
     };
@@ -776,7 +787,9 @@ body {
       var dbTs    = row ? row.updated_at : null;
       var merged  = _mergeArraysThreeWay(window._turniBase, updated, dbLista);
       var newTs   = new Date().toISOString();
-      var newData = { lista: merged, _sid: window._sessionId };
+      // FIX v36: revisione monotona — incrementa quella letta dal DB
+      var newRev  = ((row && row.data && row.data._rev) || 0) + 1;
+      var newData = { lista: merged, _sid: window._sessionId, _rev: newRev };
       var written = false;
 
       if (!dbTs) {
@@ -805,7 +818,30 @@ body {
         console.error('[turni] save: max retries exceeded');
         return;
       }
-      window._turniBase = JSON.parse(JSON.stringify(merged));
+      // FIX v36: il DB ora contiene 'merged' con revisione newRev.
+      // Qualsiasi snapshot ricevuto/bufferizzato prima di questa scrittura è
+      // obsoleto per definizione (il merge ha già letto e incorporato il DB).
+      window._turniRev = newRev;
+      window._lastTurniMerged = merged;
+      window._pendingTurniSnap = null;
+      window._pendingTurniBase = null;
+      window._pendingTurniRev = 0;
+      var _dirtyNow = (window._lastUserInputAt || 0) > (window._lastSaveTurniAt || 0);
+      if (!_dirtyNow && !window._anyInputFocused) {
+        // Mostra subito all'utente lo stato reale del DB (incluse le modifiche
+        // dei colleghi integrate dal merge): la vista di chi salva non resta
+        // mai obsoleta — era questa la causa dello 'stale view' propagato.
+        window._turniBase = JSON.parse(JSON.stringify(merged));
+        if (window._applyTurniUpdate) window._applyTurniUpdate(merged);
+      } else {
+        // L'utente sta già riscrivendo sopra la lista mostrata in UI ('updated'):
+        // la base corretta per il prossimo merge è 'updated' (ciò che vede),
+        // mentre 'merged' va in coda e sarà applicato appena il campo è libero.
+        window._turniBase = JSON.parse(JSON.stringify(updated));
+        window._pendingTurniSnap = merged;
+        window._pendingTurniBase = JSON.parse(JSON.stringify(merged));
+        window._pendingTurniRev = newRev;
+      }
     }
 
     window._fbSaveTurni = function(updated) {
@@ -988,11 +1024,8 @@ body {
         var p = msg.payload;
         if (!p || !p.lista) return;
         if (p._sid && p._sid === window._sessionId) return;
-        // FIX v35: _turniBase NON va aggiornato qui — viene aggiornato dal componente
-        // React SOLO se l'utente non ha modifiche in corso (dirty=false, focus=false).
-        // Aggiornarlo qui prima sovrascriveva la base di editing dell'utente, rendendo
-        // il 3-way merge incapace di distinguere le sue modifiche da quelle del collega.
-        onTurniChange(p.lista);
+        // FIX v35/v36: _turniBase NON va aggiornato qui — decide il componente React.
+        onTurniChange(p.lista, p.rev || 0);
       }
       function _cardsHandler(msg) {
         var p = msg.payload;
@@ -1140,10 +1173,11 @@ body {
         return _wTurni(updated).then(function() {
           try {
             var ch = window._bcTurniCh;
-            if (ch && window._turniBase) {
+            var _bcLista = window._lastTurniMerged || window._turniBase;
+            if (ch && _bcLista) {
               ch.send({
                 type: 'broadcast', event: 'turni_update',
-                payload: { lista: window._turniBase, _sid: window._sessionId }
+                payload: { lista: _bcLista, rev: window._turniRev || 0, _sid: window._sessionId }
               }).catch(function(){});
             }
           } catch(e) { /* ignora errori broadcast */ }
@@ -1388,8 +1422,8 @@ body {
                 if (!row.data || !row.data.lista) continue;
                 if (row.data._sid && row.data._sid === window._sessionId) continue;
                 if (row.id === 'turni_medici/turni' && _cbTurni) {
-                  // FIX v35: non aggiornare _turniBase qui, lo gestisce il componente React
-                  _cbTurni(row.data.lista);
+                  // FIX v35/v36: non aggiornare _turniBase qui; passa la revisione
+                  _cbTurni(row.data.lista, row.data._rev || 0);
                 } else if (row.id === 'turni_medici/cardiologists' && _cbCards) {
                   window._cardsBase = JSON.parse(JSON.stringify(row.data.lista));
                   _cbCards(row.data.lista);
@@ -1503,8 +1537,8 @@ body {
           }, function(p) {
             if (!p.new || !p.new.data || !p.new.data.lista) return;
             if (p.new.data._sid && p.new.data._sid === window._sessionId) return;
-            // FIX v35: non aggiornare _turniBase qui, lo gestisce il componente React
-            onTurniChange(p.new.data.lista);
+            // FIX v35/v36: non aggiornare _turniBase qui; passa la revisione
+            onTurniChange(p.new.data.lista, p.new.data._rev || 0);
           })
           .on('postgres_changes', {
             event: '*', schema: 'public', table: 'kv_store',
@@ -1546,8 +1580,8 @@ body {
               if (!row.data || !row.data.lista) return;
               if (row.data._sid && row.data._sid === window._sessionId) return;
               if (row.id === 'turni_medici/turni' && _cbT4) {
-                // FIX v35: non aggiornare _turniBase qui, lo gestisce il componente React
-                _cbT4(row.data.lista);
+                // FIX v35/v36: non aggiornare _turniBase qui; passa la revisione
+                _cbT4(row.data.lista, row.data._rev || 0);
               } else if (row.id === 'turni_medici/cardiologists' && _cbC4) {
                 window._cardsBase = JSON.parse(JSON.stringify(row.data.lista));
                 _cbC4(row.data.lista);
@@ -26748,7 +26782,13 @@ body {
         setData(function(prev) { return prev ? Object.assign({}, prev, { turni: t }) : prev; });
       };
       var unsub = window._fbOnSnapshot ? window._fbOnSnapshot(
-        function(newTurni) {
+        function(newTurni, rev) {
+          // FIX v36 — GATE DI VERSIONE: se l'aggiornamento in arrivo ha una
+          // revisione <= a quella già mostrata, è VECCHIO → scartato subito.
+          // Un dato obsoleto non può mai più sovrascrivere uno più recente,
+          // da qualunque canale arrivi (broadcast, realtime, polling, buffer).
+          var _rev = rev || 0;
+          if (_rev && _rev <= (window._turniRev || 0)) return;
           // FIX v34 — SOLUZIONE DEFINITIVA:
           // Il problema storico era usare un timeout (30s) come proxy per
           // "nessuna modifica non salvata". Non funziona: l'utente può stare
@@ -26774,11 +26814,16 @@ body {
           // Se non dirty → aggiorna _turniBase e applica subito all'UI.
           var _isDirty = (window._lastUserInputAt || 0) > (window._lastSaveTurniAt || 0);
           if (window._anyInputFocused || _isDirty) {
-            window._pendingTurniSnap = newTurni;
-            window._pendingTurniBase = JSON.parse(JSON.stringify(newTurni));
+            // Bufferizza solo se più recente del pending già in coda
+            if (!window._pendingTurniRev || !_rev || _rev >= window._pendingTurniRev) {
+              window._pendingTurniSnap = newTurni;
+              window._pendingTurniBase = JSON.parse(JSON.stringify(newTurni));
+              window._pendingTurniRev = _rev;
+            }
             return;
           }
           // Nessuna modifica in corso: ora è sicuro avanzare la base e aggiornare l'UI.
+          if (_rev) window._turniRev = Math.max(window._turniRev || 0, _rev);
           window._turniBase = JSON.parse(JSON.stringify(newTurni));
           setTurni(newTurni);
           setData(function(prev) { return prev ? Object.assign({}, prev, { turni: newTurni }) : prev; });
@@ -26853,11 +26898,17 @@ body {
       // Dopo il salvataggio: applica subito eventuali aggiornamenti dei colleghi
       // in coda (ora che lo stato è pulito, il buffer può essere svuotato).
       setTimeout(function() {
-        if (window._pendingTurniSnap) {
+        // FIX v36: applica il pending SOLO se l'utente non sta già riscrivendo —
+        // prima veniva applicato incondizionatamente e poteva cancellare testo
+        // appena digitato o regredire la vista a uno snapshot obsoleto.
+        var _dirty2 = (window._lastUserInputAt || 0) > (window._lastSaveTurniAt || 0);
+        if (window._pendingTurniSnap && !_dirty2 && !window._anyInputFocused) {
           var snap = window._pendingTurniSnap;
           var base = window._pendingTurniBase || snap;
+          if (window._pendingTurniRev) window._turniRev = Math.max(window._turniRev || 0, window._pendingTurniRev);
           window._pendingTurniSnap = null;
           window._pendingTurniBase = null;
+          window._pendingTurniRev = 0;
           window._turniBase = JSON.parse(JSON.stringify(base));
           if (window._applyTurniUpdate) window._applyTurniUpdate(snap);
         }
