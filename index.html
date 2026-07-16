@@ -377,11 +377,8 @@ body {
 </style>
     <script>
       (function() {
-        var theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'alfred-dark' : 'alfred-light';
-        document.documentElement.setAttribute('data-theme', theme);
-        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function(e) {
-          document.documentElement.setAttribute('data-theme', e.matches ? 'alfred-dark' : 'alfred-light');
-        });
+        // FIX v37: tema SEMPRE chiaro, indipendentemente dal tema di sistema
+        document.documentElement.setAttribute('data-theme', 'alfred-light');
       })();
     </script>
   
@@ -441,7 +438,21 @@ body {
     window._lastCountBlur    = 0;
     window._pendingRealtimeSnap = {};
     window._lastSavedUpdatedAt = null; // FIX race-condition: timestamp ultimo salvataggio locale
-    window._holterLocalDirty = { hc: {}, hp: {}, spiro: {}, pls: {}, disp_overrides: {}, ecg_times: {}, extra_hc: {}, extra_hp: {}, extra_sp: {}, extra_pl: {} };
+    window._holterLocalDirty = { hc: {}, hp: {}, spiro: {}, pls: {}, notes: {}, disp_overrides: {}, ecg_times: {}, extra_hc: {}, extra_hp: {}, extra_sp: {}, extra_pl: {} };
+    // FIX v37: ultima versione REMOTA nota delle note (base fresca per i salvataggi)
+    window._lastRemoteNotes = null;
+    // FIX v37: il draft locale puo' essere usato SOLO al primo caricamento
+    window._holterDraftChecked = false;
+    // FIX v37: merge di una mappa remota preservando le chiavi dirty locali
+    window._mergeRemoteMap = function(remote, prev, dirtySection) {
+      var nd = (window._holterLocalDirty || {})[dirtySection] || {};
+      var o = Object.assign({}, remote || {});
+      Object.keys(nd).forEach(function(k) {
+        if (nd[k] === '__DEL__') { delete o[k]; return; }
+        if (prev && Object.prototype.hasOwnProperty.call(prev, k)) o[k] = prev[k]; else delete o[k];
+      });
+      return o;
+    };
 
     document.addEventListener('focusin', function(e) {
       if (e.target && e.target.classList &&
@@ -741,6 +752,8 @@ body {
       }
       return result;
     }
+    // FIX v37: esposta per il live-merge degli aggiornamenti in arrivo
+    window._mergeTurniLive = _mergeArraysThreeWay;
 
     // ── Helpers window._fb* ──────────────────────────────────────────────────
     window._fbLoadData = async function() {
@@ -944,6 +957,7 @@ body {
       var dirtyExSp  = (_dirty.extra_sp  && Object.keys(_dirty.extra_sp).length)  ? _dirty.extra_sp  : {};
       var dirtyExPl  = (_dirty.extra_pl  && Object.keys(_dirty.extra_pl).length)  ? _dirty.extra_pl  : {};
       var dirtyDisp  = (_dirty.disp_overrides && Object.keys(_dirty.disp_overrides).length) ? _dirty.disp_overrides : {};
+      var _dirtyNotes = (_dirty.notes && Object.keys(_dirty.notes).length) ? _dirty.notes : {};
 
       // ── Snapshot delle chiavi inviate: al completamento rimuoveremo SOLO queste ──
       var _sentKeys = {
@@ -956,12 +970,22 @@ body {
         extra_hp: Object.keys(dirtyExHp),
         extra_sp: Object.keys(dirtyExSp),
         extra_pl: Object.keys(dirtyExPl),
-        disp_overrides: Object.keys(dirtyDisp)
+        disp_overrides: Object.keys(dirtyDisp),
+        notes: Object.keys(_dirtyNotes)
       };
 
-      // Per le note: invia solo se effettivamente cambiate rispetto all'ultimo save
-      var notesChanged = (JSON.stringify(notes) !== JSON.stringify(window._lastSavedNotes));
-      var notesParam   = notesChanged ? notes : null;
+      // FIX v37: le note vengono inviate come base-remota-fresca + SOLO le
+      // chiavi modificate localmente -> una vista obsoleta non puo' piu'
+      // cancellare le note dei colleghi.
+      var notesChanged = Object.keys(_dirtyNotes).length > 0;
+      var notesParam = null;
+      if (notesChanged) {
+        notesParam = Object.assign({}, window._lastRemoteNotes || notes || {});
+        Object.keys(_dirtyNotes).forEach(function(k) {
+          if (_dirtyNotes[k] === '__DEL__') { delete notesParam[k]; return; }
+          if (notes && Object.prototype.hasOwnProperty.call(notes, k)) notesParam[k] = notes[k]; else delete notesParam[k];
+        });
+      }
 
       // ── MERGE ATOMICO via Supabase RPC ──────────────────────────────────────
       var _wk = weekKey;
@@ -987,7 +1011,7 @@ body {
         window._lastSavedUpdatedAtTimer = setTimeout(function() {
           window._lastSavedUpdatedAt = null;
         }, 10000);
-        if (notesChanged) window._lastSavedNotes = JSON.parse(JSON.stringify(notes));
+        if (notesChanged) { window._lastSavedNotes = JSON.parse(JSON.stringify(notes)); window._lastRemoteNotes = JSON.parse(JSON.stringify(notesParam)); }
 
         // ── Rimozione selettiva delle sole chiavi inviate ─────────────────────
         // NON azzera _holterLocalDirty! Rimuove solo le chiavi che sono state
@@ -1309,14 +1333,8 @@ body {
                 if (p._sid && p._sid === window._sessionId) return;
                 var row = p.data;
                 var doc = _makeHolterBroadcastDoc(row);
-                if (window._anyCountFocused) {
-                  var _sk = 'holter_counts_' + docId;
-                  window._pendingRealtimeSnap = window._pendingRealtimeSnap || {};
-                  window._pendingRealtimeSnap[_sk] = {
-                    onNext: onNext, doc: doc, dataUpdatedAt: row.updated_at
-                  };
-                  return;
-                }
+                // FIX v37: applicazione LIVE — niente buffer sul focus.
+                // I valori in digitazione sono protetti dalle chiavi dirty.
                 onNext(doc);
               }
 
@@ -1631,14 +1649,8 @@ body {
                     };
                   }
                 };
-                if (window._anyCountFocused) {
-                  var _sk = 'holter_counts_' + docId;
-                  window._pendingRealtimeSnap = window._pendingRealtimeSnap || {};
-                  window._pendingRealtimeSnap[_sk] = {
-                    onNext: onNext, doc: doc, dataUpdatedAt: row.updated_at
-                  };
-                  return;
-                }
+                // FIX v37: applicazione LIVE — niente buffer sul focus.
+                // I valori in digitazione sono protetti dalle chiavi dirty.
                 onNext(doc);
               }
 
@@ -25240,29 +25252,41 @@ body {
         // 1) echo del proprio salvataggio (ignoreSnap)
         // 2) snapshot che arriva MENTRE si sta digitando (_anyCountFocused)
         // 3) snapshot che arriva entro 900 ms dal blur (save in corso)
-        if (window._anyCountFocused || (Date.now() - (window._lastCountBlur || 0) < 900)) return;
+        // FIX v37: LIVE — gli snapshot si applicano anche durante la digitazione;
+        // le chiavi dirty (_holterLocalDirty) proteggono i valori non salvati.
         // Se stiamo ignorando (save in corso), bufferizziamo anziché perdere lo snapshot remoto
         if (ignoreSnap.current) { pendingSnap.current = doc; return; }
         fromRemote.current = true;
         if (doc.exists) {
           var d = doc.data();
           // Controlla draft locale (protezione Ctrl+F5)
+          // FIX v37 — BUG CRITICO RISOLTO: il draft veniva ripristinato ad OGNI
+          // snapshot (il suo _ts era sempre piu' recente del DB perche' riscritto
+          // ad ogni cambiamento di stato) -> gli aggiornamenti dei colleghi
+          // venivano scartati per sempre e la vista restava obsoleta.
+          // Ora il draft e' usato SOLO al primo caricamento (protezione F5),
+          // e solo se ha meno di 10 minuti.
           var _dk = 'holter_draft_' + weekKey, _draft = null;
-          try { _draft = JSON.parse(localStorage.getItem(_dk) || 'null'); } catch(e) {}
+          if (!window._holterDraftChecked) {
+            window._holterDraftChecked = true;
+            try { _draft = JSON.parse(localStorage.getItem(_dk) || 'null'); } catch(e) {}
+            if (_draft && (Date.now() - (_draft._ts || 0) > 600000)) _draft = null;
+          }
           var _dbTs = d.updatedAt ? new Date(d.updatedAt).getTime() : 0;
           var _src = (_draft && _draft._ts > _dbTs) ? _draft : d;
-          if (_draft && _draft._ts > _dbTs) console.log('[holter] Draft locale ripristinato');
+          if (_src === _draft && _draft) console.log('[holter] Draft locale ripristinato (solo primo avvio)');
           if (_src.hc) setHcCounts(function(prev){ var _dh=(window._holterLocalDirty||{}).hc||{}; return Object.assign({},_src.hc,(function(_d,_prev){var o={}; Object.keys(_d).forEach(function(k){o[k]=_prev[k];}); return o;})(_dh,prev)); });
           if (_src.hp) setHpCounts(function(prev){ var _dh=(window._holterLocalDirty||{}).hp||{}; return Object.assign({},_src.hp,(function(_d,_prev){var o={}; Object.keys(_d).forEach(function(k){o[k]=_prev[k];}); return o;})(_dh,prev)); });
           if (_src.spiro) setSpiroCounts(function(prev){ var _dh=(window._holterLocalDirty||{}).spiro||{}; return Object.assign({},_src.spiro,(function(_d,_prev){var o={}; Object.keys(_d).forEach(function(k){o[k]=_prev[k];}); return o;})(_dh,prev)); });
           if (_src.pls) setPlsCounts(function(prev){ var _dh=(window._holterLocalDirty||{}).pls||{}; return Object.assign({},_src.pls,(function(_d,_prev){var o={}; Object.keys(_d).forEach(function(k){o[k]=_prev[k];}); return o;})(_dh,prev)); });
-          if (_src.notes) setDoctorNotes(_src.notes);
-          if (_src.ecgTimes) setEcgTimes(_src.ecgTimes);
-          if (_src.extraHc && !Array.isArray(_src.extraHc)) setExtraHcDocs(_src.extraHc);
-          if (_src.extraHp && !Array.isArray(_src.extraHp)) setExtraHpDocs(_src.extraHp);
-          if (_src.extraSp && !Array.isArray(_src.extraSp)) setExtraSpDocs(_src.extraSp);
-          if (_src.extraPl && !Array.isArray(_src.extraPl)) setExtraPlDocs(_src.extraPl);
-          if (_src.disp_overrides && typeof _src.disp_overrides === 'object') setDispOverrides(_src.disp_overrides);
+          if (d.notes) window._lastRemoteNotes = JSON.parse(JSON.stringify(d.notes));
+          if (_src.notes) setDoctorNotes(function(prev){ return window._mergeRemoteMap(_src.notes, prev, 'notes'); });
+          if (_src.ecgTimes) setEcgTimes(function(prev){ return window._mergeRemoteMap(_src.ecgTimes, prev, 'ecg_times'); });
+          if (_src.extraHc && !Array.isArray(_src.extraHc)) setExtraHcDocs(function(prev){ return window._mergeRemoteMap(_src.extraHc, prev, 'extra_hc'); });
+          if (_src.extraHp && !Array.isArray(_src.extraHp)) setExtraHpDocs(function(prev){ return window._mergeRemoteMap(_src.extraHp, prev, 'extra_hp'); });
+          if (_src.extraSp && !Array.isArray(_src.extraSp)) setExtraSpDocs(function(prev){ return window._mergeRemoteMap(_src.extraSp, prev, 'extra_sp'); });
+          if (_src.extraPl && !Array.isArray(_src.extraPl)) setExtraPlDocs(function(prev){ return window._mergeRemoteMap(_src.extraPl, prev, 'extra_pl'); });
+          if (_src.disp_overrides && typeof _src.disp_overrides === 'object') setDispOverrides(function(prev){ return window._mergeRemoteMap(_src.disp_overrides, prev, 'disp_overrides'); });
         }
         setFsLoaded(true);
       }, function(err) {
@@ -25313,21 +25337,18 @@ body {
                   if (!_cuDoc.exists) return;
                   fromRemote.current = true;
                   var _cd = _cuDoc.data();
-                  var _cdk = 'holter_draft_' + weekKey, _cdraft = null;
-                  try { _cdraft = JSON.parse(localStorage.getItem(_cdk) || 'null'); } catch(e2) {}
-                  var _cdbTs = _cd.updatedAt ? new Date(_cd.updatedAt).getTime() : 0;
-                  var _csrc = (_cdraft && _cdraft._ts > _cdbTs) ? _cdraft : _cd;
+                  var _csrc = _cd; // FIX v37: mai draft durante il funzionamento live
                   if (_csrc.hc) setHcCounts(function(prev){ var _dh=(window._holterLocalDirty||{}).hc||{}; return Object.assign({},_csrc.hc,(function(_d,_prev){var o={}; Object.keys(_d).forEach(function(k){o[k]=_prev[k];}); return o;})(_dh,prev)); });
                   if (_csrc.hp) setHpCounts(function(prev){ var _dh=(window._holterLocalDirty||{}).hp||{}; return Object.assign({},_csrc.hp,(function(_d,_prev){var o={}; Object.keys(_d).forEach(function(k){o[k]=_prev[k];}); return o;})(_dh,prev)); });
                   if (_csrc.spiro) setSpiroCounts(function(prev){ var _dh=(window._holterLocalDirty||{}).spiro||{}; return Object.assign({},_csrc.spiro,(function(_d,_prev){var o={}; Object.keys(_d).forEach(function(k){o[k]=_prev[k];}); return o;})(_dh,prev)); });
                   if (_csrc.pls) setPlsCounts(function(prev){ var _dh=(window._holterLocalDirty||{}).pls||{}; return Object.assign({},_csrc.pls,(function(_d,_prev){var o={}; Object.keys(_d).forEach(function(k){o[k]=_prev[k];}); return o;})(_dh,prev)); });
-                  if (_csrc.notes) setDoctorNotes(_csrc.notes);
-                  if (_csrc.ecgTimes) setEcgTimes(_csrc.ecgTimes);
-                  if (_csrc.extraHc && !Array.isArray(_csrc.extraHc)) setExtraHcDocs(_csrc.extraHc);
-                  if (_csrc.extraHp && !Array.isArray(_csrc.extraHp)) setExtraHpDocs(_csrc.extraHp);
-                  if (_csrc.extraSp && !Array.isArray(_csrc.extraSp)) setExtraSpDocs(_csrc.extraSp);
-                  if (_csrc.extraPl && !Array.isArray(_csrc.extraPl)) setExtraPlDocs(_csrc.extraPl);
-                  if (_csrc.disp_overrides && typeof _csrc.disp_overrides === 'object') setDispOverrides(_csrc.disp_overrides);
+                  if (_csrc.notes) window._lastRemoteNotes = JSON.parse(JSON.stringify(_csrc.notes));
+                  if (_csrc.notes) setDoctorNotes(function(prev){ return window._mergeRemoteMap(_csrc.notes, prev, 'notes'); });
+                  if (_csrc.ecgTimes) setEcgTimes(function(prev){ return window._mergeRemoteMap(_csrc.ecgTimes, prev, 'ecg_times'); });
+                  if (_csrc.extraHc && !Array.isArray(_csrc.extraHc)) setExtraHcDocs(function(prev){ return window._mergeRemoteMap(_csrc.extraHc, prev, 'extra_hc'); });
+                  if (_csrc.extraHp && !Array.isArray(_csrc.extraHp)) setExtraHpDocs(function(prev){ return window._mergeRemoteMap(_csrc.extraHp, prev, 'extra_hp'); });
+                  if (_csrc.extraSp && !Array.isArray(_csrc.extraSp)) setExtraSpDocs(function(prev){ return window._mergeRemoteMap(_csrc.extraSp, prev, 'extra_sp'); });
+                  if (_csrc.disp_overrides && typeof _csrc.disp_overrides === 'object') setDispOverrides(function(prev){ return window._mergeRemoteMap(_csrc.disp_overrides, prev, 'disp_overrides'); });
                   setFsLoaded(true);
                 }).catch(function() {});
               }
@@ -25340,13 +25361,18 @@ body {
     // Draft localStorage immediato (protezione Ctrl+F5 / chiusura tab)
     (0, import_react3.useEffect)(function() {
       if (!fsLoaded) return;
-      try {
-        localStorage.setItem('holter_draft_' + weekKey, JSON.stringify({
-          _ts: Date.now(), hc: hcCounts, hp: hpCounts, spiro: spiroCounts, pls: plsCounts,
-          notes: doctorNotes, ecgTimes: ecgTimes,
-          extraHc: extraHcDocs, extraHp: extraHpDocs, extraSp: extraSpDocs, extraPl: extraPlDocs, disp_overrides: dispOverrides
-        }));
-      } catch(e) {}
+      // FIX v37: debounce 800ms — prima serializzava TUTTO lo stato ad ogni
+      // singolo tasto premuto (causa di micro-freeze con dati grandi).
+      var _dt = setTimeout(function() {
+        try {
+          localStorage.setItem('holter_draft_' + weekKey, JSON.stringify({
+            _ts: Date.now(), hc: hcCounts, hp: hpCounts, spiro: spiroCounts, pls: plsCounts,
+            notes: doctorNotes, ecgTimes: ecgTimes,
+            extraHc: extraHcDocs, extraHp: extraHpDocs, extraSp: extraSpDocs, extraPl: extraPlDocs, disp_overrides: dispOverrides
+          }));
+        } catch(e) {}
+      }, 800);
+      return function() { clearTimeout(_dt); };
     }, [hcCounts, hpCounts, spiroCounts, plsCounts, doctorNotes, ecgTimes, extraHcDocs, extraHpDocs, extraSpDocs, extraPlDocs, dispOverrides, fsLoaded]);
 
     // ── Salva gli orari ECG effettivi (default + override) su Supabase ────────
@@ -26540,7 +26566,7 @@ body {
               noteModal.mode === "view" || (doctorNotes[_safeNoteKey(noteModal.key)] && doctorNotes[_safeNoteKey(noteModal.key)].length > 0) ? (0, _j)("button", {
                 onClick: function() {
                   var k = _safeNoteKey(noteModal.key);
-                  setDoctorNotes(function(prev) { var n = Object.assign({}, prev); delete n[k]; delete n[noteModal.key]; return n; });
+                  setDoctorNotes(function(prev) { var n = Object.assign({}, prev); delete n[k]; delete n[noteModal.key]; window._holterLocalDirty.notes = window._holterLocalDirty.notes || {}; window._holterLocalDirty.notes[k] = '__DEL__'; window._holterLocalDirty.notes[noteModal.key] = '__DEL__'; return n; });
                   setNoteModal(null);
                 },
                 style: { background: "none", border: "1px solid #fca5a5", borderRadius: "8px", padding: "7px 14px", fontSize: "12px", cursor: "pointer", color: "#ef4444" },
@@ -26550,9 +26576,9 @@ body {
                 onClick: function() {
                   var k = _safeNoteKey(noteModal.key); var txt = noteModal.note.trim();
                   if (txt) {
-                    setDoctorNotes(function(prev) { var n = Object.assign({}, prev); delete n[noteModal.key]; n[k] = txt; return n; });
+                    setDoctorNotes(function(prev) { var n = Object.assign({}, prev); delete n[noteModal.key]; n[k] = txt; window._holterLocalDirty.notes = window._holterLocalDirty.notes || {}; if (noteModal.key !== k) window._holterLocalDirty.notes[noteModal.key] = '__DEL__'; window._holterLocalDirty.notes[k] = txt; return n; });
                   } else {
-                    setDoctorNotes(function(prev) { var n = Object.assign({}, prev); delete n[k]; delete n[noteModal.key]; return n; });
+                    setDoctorNotes(function(prev) { var n = Object.assign({}, prev); delete n[k]; delete n[noteModal.key]; window._holterLocalDirty.notes = window._holterLocalDirty.notes || {}; window._holterLocalDirty.notes[k] = '__DEL__'; window._holterLocalDirty.notes[noteModal.key] = '__DEL__'; return n; });
                   }
                   setNoteModal(null);
                 },
@@ -26812,18 +26838,26 @@ body {
           // _turniBase rimane la versione da cui l'utente sta modificando: il 3-way merge
           // al salvataggio può così calcolare correttamente il delta dell'utente vs DB.
           // Se non dirty → aggiorna _turniBase e applica subito all'UI.
+          // FIX v37 — LIVE MERGE (stile Excel condiviso):
+          // l'aggiornamento del collega viene applicato SUBITO, campo per campo.
+          // Vengono preservati SOLO i campi modificati localmente e non ancora
+          // salvati (local != base). Niente buffer, niente attese: tutti vedono
+          // tutto in tempo reale e nessuno perde nulla.
+          if (_rev) window._turniRev = Math.max(window._turniRev || 0, _rev);
           var _isDirty = (window._lastUserInputAt || 0) > (window._lastSaveTurniAt || 0);
           if (window._anyInputFocused || _isDirty) {
-            // Bufferizza solo se più recente del pending già in coda
-            if (!window._pendingTurniRev || !_rev || _rev >= window._pendingTurniRev) {
-              window._pendingTurniSnap = newTurni;
-              window._pendingTurniBase = JSON.parse(JSON.stringify(newTurni));
-              window._pendingTurniRev = _rev;
-            }
+            // _turniBase NON avanza: al salvataggio il 3-way merge vede ancora
+            // la base da cui l'utente e' partito -> il suo delta resta corretto.
+            setTurni(function(prevT) {
+              var mergedLive;
+              try { mergedLive = window._mergeTurniLive(window._turniBase, prevT, newTurni); }
+              catch (e) { mergedLive = prevT; }
+              setData(function(prev) { return prev ? Object.assign({}, prev, { turni: mergedLive }) : prev; });
+              return mergedLive;
+            });
             return;
           }
-          // Nessuna modifica in corso: ora è sicuro avanzare la base e aggiornare l'UI.
-          if (_rev) window._turniRev = Math.max(window._turniRev || 0, _rev);
+          // Nessuna modifica in corso: avanza anche la base.
           window._turniBase = JSON.parse(JSON.stringify(newTurni));
           setTurni(newTurni);
           setData(function(prev) { return prev ? Object.assign({}, prev, { turni: newTurni }) : prev; });
