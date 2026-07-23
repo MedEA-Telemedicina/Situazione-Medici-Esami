@@ -482,9 +482,14 @@ body {
               var snaps = window._pendingRealtimeSnap || {};
               window._pendingRealtimeSnap = {};
               Object.values(snaps).forEach(function(s) {
-                // Scarta snapshot remoti più vecchi dell'ultimo salvataggio locale
-                if (s.dataUpdatedAt && window._lastSavedUpdatedAt && s.dataUpdatedAt <= window._lastSavedUpdatedAt) return;
-                try { s.onNext(s.doc); } catch(err2) {}
+                // FIX v38: al blur rileggi il DB (stato fresco post-merge) invece
+                // di applicare un buffer potenzialmente obsoleto; il gate monotono
+                // nel componente scarta comunque qualsiasi dato piu' vecchio.
+                try {
+                  if (s.refresh) { s.refresh(); return; }
+                  if (s.dataUpdatedAt && window._lastSavedUpdatedAt && s.dataUpdatedAt <= window._lastSavedUpdatedAt) return;
+                  s.onNext(s.doc);
+                } catch(err2) {}
               });
             }, 350);
           }
@@ -934,14 +939,22 @@ body {
     window._fbSaveHolterCounts = function(weekKey, hc, hp, spiro, pls, notes, ecgTimes, extraHc, extraHp, extraSp, extraPl, dispOverrides) {
       var now = Date.now();
       if (window._lastFbSave && now - window._lastFbSave < 600) {
-        clearTimeout(window._fbSaveRetry);
+        // FIX v38: coalescing — un'unica Promise condivisa con gli argomenti
+        // piu' recenti. Prima ogni chiamata ravvicinata cancellava il retry
+        // precedente lasciando la sua Promise sospesa per sempre:
+        // ignoreSnap restava true -> pagina "congelata" e snapshot persi.
+        window._fbSaveDeferredArgs = [weekKey, hc, hp, spiro, pls, notes, ecgTimes, extraHc, extraHp, extraSp, extraPl, dispOverrides];
+        if (window._fbSavePendingPromise) return window._fbSavePendingPromise;
         var retryDelay = 600 - (now - window._lastFbSave) + 100;
-        return new Promise(function(resolve, reject) {
+        window._fbSavePendingPromise = new Promise(function(resolve, reject) {
           window._fbSaveRetry = setTimeout(function() {
-            window._fbSaveHolterCounts(weekKey, hc, hp, spiro, pls, notes, ecgTimes, extraHc, extraHp, extraSp, extraPl, dispOverrides)
-              .then(resolve, reject);
+            window._fbSavePendingPromise = null;
+            var _a = window._fbSaveDeferredArgs || [];
+            window._fbSaveDeferredArgs = null;
+            window._fbSaveHolterCounts.apply(window, _a).then(resolve, reject);
           }, retryDelay);
         });
+        return window._fbSavePendingPromise;
       }
       window._lastFbSave = now;
 
@@ -960,18 +973,22 @@ body {
       var _dirtyNotes = (_dirty.notes && Object.keys(_dirty.notes).length) ? _dirty.notes : {};
 
       // ── Snapshot delle chiavi inviate: al completamento rimuoveremo SOLO queste ──
-      var _sentKeys = {
-        hc: Object.keys(dirtyHc),
-        hp: Object.keys(dirtyHp),
-        spiro: Object.keys(dirtySpiro),
-        pls: Object.keys(dirtyPls),
-        ecg_times: Object.keys(dirtyEcg),
-        extra_hc: Object.keys(dirtyExHc),
-        extra_hp: Object.keys(dirtyExHp),
-        extra_sp: Object.keys(dirtyExSp),
-        extra_pl: Object.keys(dirtyExPl),
-        disp_overrides: Object.keys(dirtyDisp),
-        notes: Object.keys(_dirtyNotes)
+      // FIX v38: snapshot dei VALORI inviati (non solo delle chiavi): al
+      // completamento il flag dirty viene rimosso SOLO se il valore non e'
+      // cambiato durante il salvataggio in volo.
+      var _snapVals = function(m) { var o = {}; Object.keys(m).forEach(function(k){ var v = m[k]; o[k] = (v && typeof v === 'object') ? JSON.parse(JSON.stringify(v)) : v; }); return o; };
+      var _sentVals = {
+        hc: _snapVals(dirtyHc),
+        hp: _snapVals(dirtyHp),
+        spiro: _snapVals(dirtySpiro),
+        pls: _snapVals(dirtyPls),
+        ecg_times: _snapVals(dirtyEcg),
+        extra_hc: _snapVals(dirtyExHc),
+        extra_hp: _snapVals(dirtyExHp),
+        extra_sp: _snapVals(dirtyExSp),
+        extra_pl: _snapVals(dirtyExPl),
+        disp_overrides: _snapVals(dirtyDisp),
+        notes: _snapVals(_dirtyNotes)
       };
 
       // FIX v37: le note vengono inviate come base-remota-fresca + SOLO le
@@ -1013,15 +1030,33 @@ body {
         }, 10000);
         if (notesChanged) { window._lastSavedNotes = JSON.parse(JSON.stringify(notes)); window._lastRemoteNotes = JSON.parse(JSON.stringify(notesParam)); }
 
-        // ── Rimozione selettiva delle sole chiavi inviate ─────────────────────
-        // NON azzera _holterLocalDirty! Rimuove solo le chiavi che sono state
-        // effettivamente salvate, preservando quelle aggiunte nel frattempo.
-        var cur = window._holterLocalDirty || {};
-        Object.keys(_sentKeys).forEach(function(section) {
-          if (cur[section] && _sentKeys[section].length) {
-            _sentKeys[section].forEach(function(k) { delete cur[section][k]; });
-          }
-        });
+        // ── FIX v38: arma il gate monotono PRIMA di rimuovere i flag dirty ──
+        // Finche' il gate non e' armato, i flag dirty proteggono le celle;
+        // una volta armato con il timestamp SERVER del nostro salvataggio,
+        // ogni snapshot piu' vecchio (broadcast/polling/buffer in ritardo)
+        // viene scartato da tutti i canali. Chiude la finestra in cui un
+        // broadcast obsoleto di un collega cancellava valori appena salvati.
+        return _sb.from('holter_counts').select('updated_at').eq('week_key', _wk).maybeSingle()
+          .then(function(r) {
+            if (r && r.data && r.data.updated_at) {
+              var _t = new Date(r.data.updated_at).getTime();
+              window._holterAppliedTs = window._holterAppliedTs || {};
+              if (!(window._holterAppliedTs[_wk] >= _t)) window._holterAppliedTs[_wk] = _t;
+            }
+          })
+          .catch(function() {})
+          .then(function() {
+            // ── Rimozione selettiva: solo chiavi inviate E con valore invariato ──
+            var cur = window._holterLocalDirty || {};
+            var _sameVal = function(a, b) { if (a === b) return true; try { return JSON.stringify(a) === JSON.stringify(b); } catch(e) { return false; } };
+            Object.keys(_sentVals).forEach(function(section) {
+              var sec = _sentVals[section];
+              if (!cur[section]) return;
+              Object.keys(sec).forEach(function(k) {
+                if (_sameVal(cur[section][k], sec[k])) delete cur[section][k];
+              });
+            });
+          });
 
         // ── Post-save refresh rimosso (v25) ──────────────────────────────────
         // Broadcast WS (<100ms) notifica tutti i client; il polling 60s è il
@@ -1332,6 +1367,12 @@ body {
                 if (!p || !p.data) return;
                 if (p._sid && p._sid === window._sessionId) return;
                 var row = p.data;
+                // FIX v38: scarta broadcast piu' vecchi dell'ultimo stato applicato/salvato
+                if (row.updated_at) {
+                  var _bTs = new Date(row.updated_at).getTime();
+                  var _bPrev = (window._holterAppliedTs || {})[docId] || 0;
+                  if (_bTs < _bPrev) return;
+                }
                 var doc = _makeHolterBroadcastDoc(row);
                 // FIX v37: applicazione LIVE — niente buffer sul focus.
                 // I valori in digitazione sono protetti dalle chiavi dirty.
@@ -1496,9 +1537,38 @@ body {
             if (window._anyCountFocused) {
               var _psk = 'holter_counts_' + hcId;
               window._pendingRealtimeSnap = window._pendingRealtimeSnap || {};
-              window._pendingRealtimeSnap[_psk] = {
-                onNext: hcEntry.fn, doc: hcDoc, dataUpdatedAt: hcRow.updated_at
-              };
+              // FIX v38: newest-wins — mai sovrascrivere un buffer con dati piu' vecchi
+              var _oldSnap = window._pendingRealtimeSnap[_psk];
+              if (!(_oldSnap && _oldSnap.dataUpdatedAt && hcRow.updated_at && _oldSnap.dataUpdatedAt > hcRow.updated_at)) {
+                window._pendingRealtimeSnap[_psk] = {
+                  onNext: hcEntry.fn, doc: hcDoc, dataUpdatedAt: hcRow.updated_at,
+                  // FIX v38: al blur rilegge il DB fresco invece di applicare il buffer
+                  refresh: (function(_id, _fn) {
+                    return function() {
+                      return _sb.from('holter_counts')
+                        .select('hc,hp,spiro,pls,notes,ecg_times,extra_hc,extra_hp,extra_sp,extra_pl,updated_at')
+                        .eq('week_key', _id).maybeSingle()
+                        .then(function(rr) {
+                          if (!rr.data) return;
+                          var _r = rr.data;
+                          _fn({
+                            exists: true,
+                            data: function() {
+                              return {
+                                hc: _r.hc || {}, hp: _r.hp || {}, spiro: _r.spiro || {},
+                                pls: _r.pls || {}, notes: _r.notes || {},
+                                ecgTimes: _r.ecg_times || {},
+                                extraHc: _r.extra_hc || {}, extraHp: _r.extra_hp || {},
+                                extraSp: _r.extra_sp || {}, extraPl: _r.extra_pl || {},
+                                updatedAt: _r.updated_at
+                              };
+                            }
+                          });
+                        }).catch(function(){});
+                    };
+                  })(hcId, hcEntry.fn)
+                };
+              }
             } else {
               hcEntry.fn(hcDoc);
             }
@@ -25259,6 +25329,14 @@ body {
         fromRemote.current = true;
         if (doc.exists) {
           var d = doc.data();
+          // FIX v38: gate monotono — scarta qualsiasi snapshot piu' VECCHIO
+          // dell'ultimo stato applicato o salvato (timestamp server).
+          // Un dato obsoleto non puo' piu' regredire la vista, da nessun canale.
+          var _gTs = d.updatedAt ? new Date(d.updatedAt).getTime() : 0;
+          window._holterAppliedTs = window._holterAppliedTs || {};
+          var _gPrev = window._holterAppliedTs[weekKey] || 0;
+          if (_gTs && _gTs < _gPrev) { fromRemote.current = false; setFsLoaded(true); return; }
+          if (_gTs > _gPrev) window._holterAppliedTs[weekKey] = _gTs;
           // Controlla draft locale (protezione Ctrl+F5)
           // FIX v37 — BUG CRITICO RISOLTO: il draft veniva ripristinato ad OGNI
           // snapshot (il suo _ts era sempre piu' recente del DB perche' riscritto
@@ -25337,6 +25415,12 @@ body {
                   if (!_cuDoc.exists) return;
                   fromRemote.current = true;
                   var _cd = _cuDoc.data();
+                  // FIX v38: gate monotono anche sulla rilettura post-save
+                  var _g2 = _cd.updatedAt ? new Date(_cd.updatedAt).getTime() : 0;
+                  window._holterAppliedTs = window._holterAppliedTs || {};
+                  var _g2p = window._holterAppliedTs[weekKey] || 0;
+                  if (_g2 && _g2 < _g2p) { fromRemote.current = false; return; }
+                  if (_g2 > _g2p) window._holterAppliedTs[weekKey] = _g2;
                   var _csrc = _cd; // FIX v37: mai draft durante il funzionamento live
                   if (_csrc.hc) setHcCounts(function(prev){ var _dh=(window._holterLocalDirty||{}).hc||{}; return Object.assign({},_csrc.hc,(function(_d,_prev){var o={}; Object.keys(_d).forEach(function(k){o[k]=_prev[k];}); return o;})(_dh,prev)); });
                   if (_csrc.hp) setHpCounts(function(prev){ var _dh=(window._holterLocalDirty||{}).hp||{}; return Object.assign({},_csrc.hp,(function(_d,_prev){var o={}; Object.keys(_d).forEach(function(k){o[k]=_prev[k];}); return o;})(_dh,prev)); });
