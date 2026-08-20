@@ -634,18 +634,8 @@ body {
                       event: '*', schema: 'public', table: tgt.table,
                       filter: tgt.keyCol + '=eq.' + tgt.keyVal
                     }, function(p) {
-                      // Blocca lo snapshot remoto se l'utente sta digitando
-                      // in un campo contatore; verrà applicato al blur.
-                      if (window._anyCountFocused && tgt.isHolter) {
-                        var _sk = tgt.table + '_' + tgt.keyVal;
-                        window._pendingRealtimeSnap = window._pendingRealtimeSnap || {};
-                        window._pendingRealtimeSnap[_sk] = {
-                          onNext: onNext,
-                          doc: _makeDoc(tgt, p.new || null),
-                          dataUpdatedAt: p.new && p.new.updated_at ? p.new.updated_at : null // FIX
-                        };
-                        return;
-                      }
+                      // FIX v39: aggiornamento LIVE — niente buffer.
+                      // I flag dirty nel componente React proteggono i campi in digitazione.
                       onNext(_makeDoc(tgt, p.new || null));
                     })
                     .subscribe();
@@ -1534,44 +1524,9 @@ body {
                 };
               }
             };
-            if (window._anyCountFocused) {
-              var _psk = 'holter_counts_' + hcId;
-              window._pendingRealtimeSnap = window._pendingRealtimeSnap || {};
-              // FIX v38: newest-wins — mai sovrascrivere un buffer con dati piu' vecchi
-              var _oldSnap = window._pendingRealtimeSnap[_psk];
-              if (!(_oldSnap && _oldSnap.dataUpdatedAt && hcRow.updated_at && _oldSnap.dataUpdatedAt > hcRow.updated_at)) {
-                window._pendingRealtimeSnap[_psk] = {
-                  onNext: hcEntry.fn, doc: hcDoc, dataUpdatedAt: hcRow.updated_at,
-                  // FIX v38: al blur rilegge il DB fresco invece di applicare il buffer
-                  refresh: (function(_id, _fn) {
-                    return function() {
-                      return _sb.from('holter_counts')
-                        .select('hc,hp,spiro,pls,notes,ecg_times,extra_hc,extra_hp,extra_sp,extra_pl,updated_at')
-                        .eq('week_key', _id).maybeSingle()
-                        .then(function(rr) {
-                          if (!rr.data) return;
-                          var _r = rr.data;
-                          _fn({
-                            exists: true,
-                            data: function() {
-                              return {
-                                hc: _r.hc || {}, hp: _r.hp || {}, spiro: _r.spiro || {},
-                                pls: _r.pls || {}, notes: _r.notes || {},
-                                ecgTimes: _r.ecg_times || {},
-                                extraHc: _r.extra_hc || {}, extraHp: _r.extra_hp || {},
-                                extraSp: _r.extra_sp || {}, extraPl: _r.extra_pl || {},
-                                updatedAt: _r.updated_at
-                              };
-                            }
-                          });
-                        }).catch(function(){});
-                    };
-                  })(hcId, hcEntry.fn)
-                };
-              }
-            } else {
-              hcEntry.fn(hcDoc);
-            }
+            // FIX v39: aggiornamento LIVE — niente buffer.
+            // I flag dirty nel componente React proteggono i campi in digitazione.
+            hcEntry.fn(hcDoc);
           }
         } catch(e) {
           console.warn('[poll-fallback v19]', e);
@@ -25381,14 +25336,11 @@ body {
       if (!fsLoaded) return;
       // Se i dati arrivano dal DB (snapshot), non risalvarli (evita echo loop)
       if (fromRemote.current) { fromRemote.current = false; return; }
-      // Ignoriamo subito gli snapshot per non sovrascrivere ciò che l'utente sta digitando
-      ignoreSnap.current = true;
-      // Svuotiamo eventuali snapshot remoti bufferizzati: saranno rimpiazzati
-      // dall'aggiornamento che stiamo per salvare (che già fa merge 3-way).
-      window._pendingRealtimeSnap = {};
-      pendingSnap.current = null; // reset buffer snapshot remoti (verranno ricaricati post-save)
+      // FIX v39: NON blocchiamo piu' gli snapshot qui — la protezione dirty-field
+      // preserva i campi in digitazione. ignoreSnap si attiva SOLO durante il save.
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(function() {
+        ignoreSnap.current = true;
         var savePromise = window._fbSaveHolterCounts
           ? window._fbSaveHolterCounts(weekKey, hcCounts, hpCounts, spiroCounts, plsCounts, doctorNotes, ecgTimes, extraHcDocs, extraHpDocs, extraSpDocs, extraPlDocs, dispOverrides)
           : fsDb.collection("holter_counts").doc(weekKey).set({
@@ -25437,7 +25389,7 @@ body {
                 }).catch(function() {});
               }
             }
-          }, 900);
+          }, 200); // FIX v39: era 900ms, ridotto a 200ms (l'echo arriva in <100ms)
         }).catch(function(err) { console.warn("Firestore save error:", err); ignoreSnap.current = false; saveTimer.current = null; });
       }, 300);
     }, [hcCounts, hpCounts, spiroCounts, plsCounts, doctorNotes, ecgTimes, extraHcDocs, extraHpDocs, extraSpDocs, extraPlDocs, dispOverrides, fsLoaded]);
@@ -26898,7 +26850,8 @@ body {
           // Un dato obsoleto non può mai più sovrascrivere uno più recente,
           // da qualunque canale arrivi (broadcast, realtime, polling, buffer).
           var _rev = rev || 0;
-          if (_rev && _rev <= (window._turniRev || 0)) return;
+          // FIX v39: era <=, causava deadlock dopo salvataggi simultanei
+          if (_rev && _rev < (window._turniRev || 0)) return;
           // FIX v34 — SOLUZIONE DEFINITIVA:
           // Il problema storico era usare un timeout (30s) come proxy per
           // "nessuna modifica non salvata". Non funziona: l'utente può stare
