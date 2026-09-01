@@ -779,6 +779,22 @@ body {
       } catch(e) { console.error('Supabase loadData error:', e); throw e; }
     };
 
+    // ── FIX v40: helper condiviso — trasforma una await "appesa" (rete
+    // instabile, tab in background, ecc.) in un rifiuto dopo N ms, invece
+    // di lasciarla sospesa per sempre. Usato sia nei salvataggi (sotto) sia
+    // nei fallback di polling più avanti, per evitare che una singola
+    // richiesta bloccata congeli permanentemente code o loop interi.
+    // Definito qui, all'inizio, cosi' e' sempre disponibile indipendentemente
+    // da quando viene invocato il primo salvataggio.
+    window._withTimeout = function(promise, ms) {
+      return Promise.race([
+        promise,
+        new Promise(function(_, reject) {
+          setTimeout(function() { reject(new Error('timeout dopo ' + ms + 'ms')); }, ms);
+        })
+      ]);
+    };
+
     // ── Salvataggio con Optimistic Concurrency Control ──────────────────────
     // Usa updated_at come lock ottimistico: la scrittura condizionale riesce
     // SOLO se il record non è stato modificato da un altro client nel frattempo.
@@ -789,7 +805,13 @@ body {
     // save concorrenti dallo stesso tab (es. due campi modificati quasi insieme).
 
     async function _doSaveTurni(updated, retry) {
-      var r = await _sb.from('kv_store').select('data, updated_at').eq('id', 'turni_medici/turni').maybeSingle();
+      // FIX v40: stesso bug di _pollFallback ma sul lato salvataggio — qui è
+      // più subdolo perché la coda è seriale (_turniSaveQueue): una await
+      // appesa blocca per sempre non solo questo salvataggio ma TUTTI quelli
+      // successivi dello stesso tab (restano in coda dietro una Promise che
+      // non si risolve né fallisce mai). _withTimeout la trasforma in un
+      // rifiuto dopo 8s, cosi' il .catch() della coda la sblocca.
+      var r = await window._withTimeout(_sb.from('kv_store').select('data, updated_at').eq('id', 'turni_medici/turni').maybeSingle(), 8000);
       var row = r.data;
       var dbLista = (row && row.data && row.data.lista) ? row.data.lista : updated;
       var dbTs    = row ? row.updated_at : null;
@@ -802,16 +824,16 @@ body {
 
       if (!dbTs) {
         // Prima scrittura: upsert senza condizioni
-        var ins = await _sb.from('kv_store').upsert({ id: 'turni_medici/turni', data: newData, updated_at: newTs });
+        var ins = await window._withTimeout(_sb.from('kv_store').upsert({ id: 'turni_medici/turni', data: newData, updated_at: newTs }), 8000);
         if (ins.error) throw ins.error;
         written = true;
       } else {
         // Scrittura condizionale: aggiorna SOLO se updated_at coincide
-        var upd = await _sb.from('kv_store')
+        var upd = await window._withTimeout(_sb.from('kv_store')
           .update({ data: newData, updated_at: newTs })
           .eq('id', 'turni_medici/turni')
           .eq('updated_at', dbTs)
-          .select('id');
+          .select('id'), 8000);
         if (upd.error) throw upd.error;
         written = !!(upd.data && upd.data.length > 0);
       }
@@ -863,7 +885,8 @@ body {
     };
 
     async function _doSaveCardiologists(updated, retry) {
-      var r = await _sb.from('kv_store').select('data, updated_at').eq('id', 'turni_medici/cardiologists').maybeSingle();
+      // FIX v40: vedi nota in _doSaveTurni — stessa protezione contro coda bloccata.
+      var r = await window._withTimeout(_sb.from('kv_store').select('data, updated_at').eq('id', 'turni_medici/cardiologists').maybeSingle(), 8000);
       var row = r.data;
       var dbLista = (row && row.data && row.data.lista) ? row.data.lista : updated;
       var dbTs    = row ? row.updated_at : null;
@@ -888,15 +911,15 @@ body {
       var written = false;
 
       if (!dbTs) {
-        var ins = await _sb.from('kv_store').upsert({ id: 'turni_medici/cardiologists', data: newData, updated_at: newTs });
+        var ins = await window._withTimeout(_sb.from('kv_store').upsert({ id: 'turni_medici/cardiologists', data: newData, updated_at: newTs }), 8000);
         if (ins.error) throw ins.error;
         written = true;
       } else {
-        var upd = await _sb.from('kv_store')
+        var upd = await window._withTimeout(_sb.from('kv_store')
           .update({ data: newData, updated_at: newTs })
           .eq('id', 'turni_medici/cardiologists')
           .eq('updated_at', dbTs)
-          .select('id');
+          .select('id'), 8000);
         if (upd.error) throw upd.error;
         written = !!(upd.data && upd.data.length > 0);
       }
@@ -1131,23 +1154,43 @@ body {
 
         // 2) Broadcast listener per aggiornamenti sub-100ms
         var chKey = ('bc_c_' + path).replace(/[^a-zA-Z0-9]/g, '_').substring(0, 64);
-        var ch = _sb.channel(chKey)
-          .on('broadcast', { event: 'state_update' }, function(msg) {
-            var p = msg.payload;
-            if (!p) return;
-            if (p._sid && p._sid === window._sessionId) return;
-            cb(p.data !== undefined ? p.data : null);
-          })
-          .subscribe(function(status) {
-            if (status === 'SUBSCRIBED') {
-              console.log('[bc] bc_c SUBSCRIBED:', path);
-              if (!window._bcCardioChs) window._bcCardioChs = {};
-              window._bcCardioChs[chKey] = ch;
-            }
-          });
+        var ch;
+        var _bcCActive = true;
+        function _cardioHandler(msg) {
+          var p = msg.payload;
+          if (!p) return;
+          if (p._sid && p._sid === window._sessionId) return;
+          cb(p.data !== undefined ? p.data : null);
+        }
+        function _subscribeCardioCh() {
+          if (!_bcCActive) return;
+          ch = _sb.channel(chKey)
+            .on('broadcast', { event: 'state_update' }, _cardioHandler)
+            .subscribe(function(status) {
+              if (status === 'SUBSCRIBED') {
+                console.log('[bc] bc_c SUBSCRIBED:', path);
+                if (!window._bcCardioChs) window._bcCardioChs = {};
+                window._bcCardioChs[chKey] = ch;
+              } else if (
+                // FIX v40: mancava la riconnessione automatica (a differenza
+                // degli altri due canali broadcast) — un errore o una
+                // disconnessione qui lasciava il canale morto fino al reload,
+                // e gli aggiornamenti "live" ripartivano solo col polling.
+                (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED')
+                && _bcCActive
+              ) {
+                console.warn('[bc] bc_c error (' + status + '), reconnect in 3s:', path);
+                try { _sb.removeChannel(ch); } catch(e2) {}
+                if (window._bcCardioChs) delete window._bcCardioChs[chKey];
+                setTimeout(_subscribeCardioCh, 3000);
+              }
+            });
+        }
+        _subscribeCardioCh();
 
         return function() {
-          _sb.removeChannel(ch);
+          _bcCActive = false;
+          try { _sb.removeChannel(ch); } catch(e2) {}
           if (window._bcCardioChs) delete window._bcCardioChs[chKey];
         };
       };
@@ -1458,23 +1501,16 @@ body {
       // fallisce mai -> _busy restava true per sempre e da quel momento
       // ogni poll successivo usciva subito (if (_busy) return;), quindi
       // l'app smetteva silenziosamente di aggiornarsi ("si freeza").
-      // _withTimeout forza un errore dopo N ms cosi' il catch scatta
-      // sempre e _busy viene rilasciato (vedi finally sotto).
-      function _withTimeout(promise, ms) {
-        return Promise.race([
-          promise,
-          new Promise(function(_, reject) {
-            setTimeout(function() { reject(new Error('poll-fallback: timeout dopo ' + ms + 'ms')); }, ms);
-          })
-        ]);
-      }
+      // window._withTimeout (definita all'inizio dello script) forza un
+      // errore dopo N ms cosi' il catch scatta sempre e _busy viene
+      // rilasciato (vedi finally sotto).
 
       async function _pollFallback() {
         if (_busy) return;
         _busy = true;
         try {
           if (_cbTurni || _cbCards) {
-            var r = await _withTimeout(_sb.from('kv_store')
+            var r = await window._withTimeout(_sb.from('kv_store')
               .select('id, data, updated_at')
               .in('id', ['turni_medici/turni', 'turni_medici/cardiologists']), 8000);
             if (r.data) {
@@ -1501,7 +1537,7 @@ body {
             var path = paths[j];
             var cb = _sseCbs[path];
             if (!cb) continue;
-            var r2 = await _withTimeout(_sb.from('cardio_state')
+            var r2 = await window._withTimeout(_sb.from('cardio_state')
               .select('data, updated_at')
               .eq('path', path)
               .maybeSingle(), 8000);
@@ -1518,7 +1554,7 @@ body {
             var hcId = hcKeys[h];
             var hcEntry = window._hcOnNextCbs[hcId];
             if (!hcEntry || !hcEntry.fn) continue;
-            var hcRes = await _withTimeout(_sb.from('holter_counts')
+            var hcRes = await window._withTimeout(_sb.from('holter_counts')
               .select('hc,hp,spiro,pls,notes,ecg_times,extra_hc,extra_hp,extra_sp,extra_pl,updated_at')
               .eq('week_key', hcId)
               .maybeSingle(), 8000);
@@ -1631,9 +1667,12 @@ body {
         if (_busy4 || (!_cbT4 && !_cbC4)) return;
         _busy4 = true;
         try {
-          var r = await _sb.from('kv_store')
+          // FIX v40: stesso bug di _pollFallback — senza timeout, una await
+          // appesa lasciava _busy4 bloccato per sempre e questo canale di
+          // sicurezza si fermava in silenzio.
+          var r = await window._withTimeout(_sb.from('kv_store')
             .select('id, data, updated_at')
-            .in('id', ['turni_medici/turni', 'turni_medici/cardiologists']);
+            .in('id', ['turni_medici/turni', 'turni_medici/cardiologists']), 8000);
           if (r.data) {
             r.data.forEach(function(row) {
               var k = 'p4s_' + row.id;
@@ -1651,8 +1690,9 @@ body {
               }
             });
           }
-        } catch(e) { /* ignora */ }
-        _busy4 = false;
+        } catch(e) { /* ignora */ } finally {
+          _busy4 = false;
+        }
       }
       setTimeout(function() { _poll4s(); setInterval(_poll4s, 4000); }, 5000);
 
@@ -24538,7 +24578,7 @@ body {
     // 3+ parti: se la prima parola è una particella nobiliare/preposizione, è un cognome composto
     // es. "De Luca Mario" → "De Luca M."
     // altrimenti è doppio nome: "Labriola Antonio Raffaele" → "Labriola A."
-    var particles = ["DE", "DI", "DEL", "DELLA", "DEGLI", "DELLE", "LO", "LA", "D'", "D\u2019"];
+    var particles = ["DE", "DI", "DEL", "DELLA", "DEGLI", "DELLE", "DELLI", "DEI", "DAI", "DAGLI", "DALLE", "DAL", "LO", "LA", "D'", "D\u2019"];
     if (particles.indexOf(parts[0].toUpperCase()) !== -1) {
       var firstName = parts[parts.length - 1];
       var surnames = parts.slice(0, parts.length - 1);
