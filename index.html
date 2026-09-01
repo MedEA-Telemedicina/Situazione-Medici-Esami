@@ -16,7 +16,7 @@
     // sia la cache del browser sia quella CDN di GitHub Pages.
     // ⚠ Incrementa V ad ogni deploy (v22 → v23 ecc.)
     (function() {
-      var V = 'v24';
+      var V = 'v40';
       var k = '_page_ver';
       try {
         var prev = localStorage.getItem(k);
@@ -28,7 +28,7 @@
       } catch(e) {}
     })();
     </script>
-    <title>Situazione Medici</title><!-- v24 -->
+    <title>Situazione Medici</title><!-- v40 -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5" type="text/css" />
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -1453,14 +1453,30 @@ body {
         };
       };
 
+      // FIX v40: se una qualsiasi chiamata Supabase resta "appesa" (rete
+      // instabile, tab in background, ecc.) la await non si risolve né
+      // fallisce mai -> _busy restava true per sempre e da quel momento
+      // ogni poll successivo usciva subito (if (_busy) return;), quindi
+      // l'app smetteva silenziosamente di aggiornarsi ("si freeza").
+      // _withTimeout forza un errore dopo N ms cosi' il catch scatta
+      // sempre e _busy viene rilasciato (vedi finally sotto).
+      function _withTimeout(promise, ms) {
+        return Promise.race([
+          promise,
+          new Promise(function(_, reject) {
+            setTimeout(function() { reject(new Error('poll-fallback: timeout dopo ' + ms + 'ms')); }, ms);
+          })
+        ]);
+      }
+
       async function _pollFallback() {
         if (_busy) return;
         _busy = true;
         try {
           if (_cbTurni || _cbCards) {
-            var r = await _sb.from('kv_store')
+            var r = await _withTimeout(_sb.from('kv_store')
               .select('id, data, updated_at')
-              .in('id', ['turni_medici/turni', 'turni_medici/cardiologists']);
+              .in('id', ['turni_medici/turni', 'turni_medici/cardiologists']), 8000);
             if (r.data) {
               for (var i = 0; i < r.data.length; i++) {
                 var row = r.data[i];
@@ -1485,10 +1501,10 @@ body {
             var path = paths[j];
             var cb = _sseCbs[path];
             if (!cb) continue;
-            var r2 = await _sb.from('cardio_state')
+            var r2 = await _withTimeout(_sb.from('cardio_state')
               .select('data, updated_at')
               .eq('path', path)
-              .maybeSingle();
+              .maybeSingle(), 8000);
             if (!r2.data) continue;
             var k2 = 'sse_' + path;
             if (!_initDone[k2]) { _initDone[k2] = true; _tsCache[k2] = r2.data.updated_at; continue; }
@@ -1502,10 +1518,10 @@ body {
             var hcId = hcKeys[h];
             var hcEntry = window._hcOnNextCbs[hcId];
             if (!hcEntry || !hcEntry.fn) continue;
-            var hcRes = await _sb.from('holter_counts')
+            var hcRes = await _withTimeout(_sb.from('holter_counts')
               .select('hc,hp,spiro,pls,notes,ecg_times,extra_hc,extra_hp,extra_sp,extra_pl,updated_at')
               .eq('week_key', hcId)
-              .maybeSingle();
+              .maybeSingle(), 8000);
             if (!hcRes.data) continue;
             var hcRow = hcRes.data;
             if (!hcEntry.init) { hcEntry.init = true; hcEntry.ts = hcRow.updated_at; continue; }
@@ -1530,8 +1546,12 @@ body {
           }
         } catch(e) {
           console.warn('[poll-fallback v19]', e);
+        } finally {
+          // FIX v40: finally invece di una riga dopo il catch, cosi' il
+          // lock si libera SEMPRE, anche se in futuro venisse aggiunto
+          // un return anticipato dentro il try.
+          _busy = false;
         }
-        _busy = false;
       }
 
       setTimeout(function() {
