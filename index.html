@@ -625,21 +625,52 @@ body {
                   if (r.error) throw r.error;
                 },
                 onSnapshot: function(onNext, onError) {
-                  _sb.from(tgt.table).select('*').eq(tgt.keyCol, tgt.keyVal).maybeSingle()
-                    .then(function(r) { onNext(_makeDoc(tgt, r.data)); })
-                    .catch(function(e) { if (onError) onError(e); });
                   var chName = ('snap_' + tgt.table + '_' + tgt.keyVal).replace(/[^a-zA-Z0-9]/g, '_').substring(0, 64);
-                  var ch = _sb.channel(chName)
-                    .on('postgres_changes', {
-                      event: '*', schema: 'public', table: tgt.table,
-                      filter: tgt.keyCol + '=eq.' + tgt.keyVal
-                    }, function(p) {
-                      // FIX v39: aggiornamento LIVE — niente buffer.
-                      // I flag dirty nel componente React proteggono i campi in digitazione.
-                      onNext(_makeDoc(tgt, p.new || null));
-                    })
-                    .subscribe();
-                  return function() { _sb.removeChannel(ch); };
+                  function _refetch() {
+                    return _sb.from(tgt.table).select('*').eq(tgt.keyCol, tgt.keyVal).maybeSingle()
+                      .then(function(r) { onNext(_makeDoc(tgt, r.data)); })
+                      .catch(function(e) { if (onError) onError(e); });
+                  }
+                  _refetch();
+                  // FIX v40: registrata per il recupero al risveglio — questo
+                  // canale (usato da banner/impostazioni admin) non ha un
+                  // polling di sicurezza dedicato come turni/holter/cardio,
+                  // quindi un evento perso durante un freeze va recuperato
+                  // con un fetch esplicito, non solo riconnettendo il canale.
+                  if (!window._genericOnSnapshotRefetchers) window._genericOnSnapshotRefetchers = {};
+                  window._genericOnSnapshotRefetchers[chName] = _refetch;
+
+                  var _snapActive = true;
+                  var ch;
+                  function _subscribeSnap() {
+                    if (!_snapActive) return;
+                    ch = _sb.channel(chName)
+                      .on('postgres_changes', {
+                        event: '*', schema: 'public', table: tgt.table,
+                        filter: tgt.keyCol + '=eq.' + tgt.keyVal
+                      }, function(p) {
+                        // FIX v39: aggiornamento LIVE — niente buffer.
+                        // I flag dirty nel componente React proteggono i campi in digitazione.
+                        onNext(_makeDoc(tgt, p.new || null));
+                      })
+                      .subscribe(function(status) {
+                        // FIX v40: mancava del tutto la riconnessione automatica.
+                        if (status === 'SUBSCRIBED') {
+                          window._resetReconnectBackoff(chName);
+                        } else if ((status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') && _snapActive) {
+                          console.warn('[snap] ' + chName + ' errore (' + status + ')');
+                          try { _sb.removeChannel(ch); } catch(e2) {}
+                          window._scheduleReconnect(chName, _subscribeSnap);
+                        }
+                      });
+                  }
+                  _subscribeSnap();
+
+                  return function() {
+                    _snapActive = false;
+                    try { _sb.removeChannel(ch); } catch(e2) {}
+                    if (window._genericOnSnapshotRefetchers) delete window._genericOnSnapshotRefetchers[chName];
+                  };
                 }
               };
             }
@@ -793,6 +824,26 @@ body {
           setTimeout(function() { reject(new Error('timeout dopo ' + ms + 'ms')); }, ms);
         })
       ]);
+    };
+
+    // FIX v40: backoff progressivo condiviso per i retry di riconnessione dei
+    // canali realtime. Prima ogni canale ritentava fisso ogni 3s, il che
+    // durante un'interruzione prolungata martella inutilmente il server (e
+    // la batteria su mobile). Ora l'attesa cresce ad ogni tentativo fallito
+    // consecutivo (3s, 6s, 12s, 24s, poi fissa a 30s) con un po' di jitter
+    // per evitare che 20 client ritentino tutti nello stesso istante: si
+    // azzera non appena un canale torna a connettersi con successo.
+    window._reconnectAttempts = window._reconnectAttempts || {};
+    window._scheduleReconnect = function(key, fn) {
+      var n = window._reconnectAttempts[key] || 0;
+      var delay = Math.min(30000, 3000 * Math.pow(2, Math.min(n, 4)));
+      delay += Math.random() * 1000;
+      window._reconnectAttempts[key] = n + 1;
+      console.log('[reconnect] ' + key + ': tentativo #' + (n + 1) + ' tra ' + Math.round(delay / 1000) + 's');
+      setTimeout(fn, delay);
+    };
+    window._resetReconnectBackoff = function(key) {
+      window._reconnectAttempts[key] = 0;
     };
 
     // ── Salvataggio con Optimistic Concurrency Control ──────────────────────
@@ -1114,15 +1165,16 @@ body {
           .subscribe(function(status) {
             if (status === 'SUBSCRIBED') {
               window._bcTurniCh = ch;
+              window._resetReconnectBackoff('bc_turni_realtime');
               console.log('[bc] bc_turni_realtime SUBSCRIBED');
             } else if (
               (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED')
               && _bcTurniActive
             ) {
-              console.warn('[bc] bc_turni_realtime error (' + status + '), reconnect in 3s');
+              console.warn('[bc] bc_turni_realtime error (' + status + ')');
               try { _sb.removeChannel(ch); } catch(e2) {}
               window._bcTurniCh = null;
-              setTimeout(_subscribeTurniCh, 3000);
+              window._scheduleReconnect('bc_turni_realtime', _subscribeTurniCh);
             }
           });
       }
@@ -1171,6 +1223,7 @@ body {
                 console.log('[bc] bc_c SUBSCRIBED:', path);
                 if (!window._bcCardioChs) window._bcCardioChs = {};
                 window._bcCardioChs[chKey] = ch;
+                window._resetReconnectBackoff(chKey);
               } else if (
                 // FIX v40: mancava la riconnessione automatica (a differenza
                 // degli altri due canali broadcast) — un errore o una
@@ -1179,10 +1232,10 @@ body {
                 (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED')
                 && _bcCActive
               ) {
-                console.warn('[bc] bc_c error (' + status + '), reconnect in 3s:', path);
+                console.warn('[bc] bc_c error (' + status + '):', path);
                 try { _sb.removeChannel(ch); } catch(e2) {}
                 if (window._bcCardioChs) delete window._bcCardioChs[chKey];
-                setTimeout(_subscribeCardioCh, 3000);
+                window._scheduleReconnect(chKey, _subscribeCardioCh);
               }
             });
         }
@@ -1422,15 +1475,16 @@ body {
                   .subscribe(function(status) {
                     if (status === 'SUBSCRIBED') {
                       _bcHolterChs[chKey] = chH;
+                      window._resetReconnectBackoff(chKey);
                       console.log('[bc] bc_h SUBSCRIBED:', docId);
                     } else if (
                       (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED')
                       && _chHolterActive
                     ) {
-                      console.warn('[bc] bc_h error (' + status + '), reconnect in 3s:', docId);
+                      console.warn('[bc] bc_h error (' + status + '):', docId);
                       try { _sb.removeChannel(chH); } catch(e2) {}
                       delete _bcHolterChs[chKey];
-                      setTimeout(_subscribeHolterBc, 3000);
+                      window._scheduleReconnect(chKey, _subscribeHolterBc);
                     }
                   });
               }
@@ -1580,6 +1634,10 @@ body {
             // I flag dirty nel componente React proteggono i campi in digitazione.
             hcEntry.fn(hcDoc);
           }
+          // FIX v40: traccia l'ultimo giro di polling riuscito, usato
+          // dall'indicatore di stato sincronizzazione per capire se siamo
+          // "live" o se serve segnalare un problema.
+          window._lastSyncOk = Date.now();
         } catch(e) {
           console.warn('[poll-fallback v19]', e);
         } finally {
@@ -1592,7 +1650,12 @@ body {
 
       setTimeout(function() {
         _pollFallback();
-        setInterval(_pollFallback, 5000); // FIX v30: era 15000, ridotto a 5s per team 20 utenti
+        // FIX v40: portato da 5s a 8s. Con il "risveglio attivo" (PATCH v40)
+        // che recupera già subito i dati appena la pagina torna utilizzabile,
+        // non serve più un poll di base così frequente per coprire i freeze —
+        // 8s riduce il carico su DB/rete per tutto il team senza perdere
+        // reattività percepita (il caso critico è comunque coperto al volo).
+        setInterval(_pollFallback, 8000); // era 5000 (prima ancora 15000)
         document.addEventListener('visibilitychange', function() {
           if (document.visibilityState === 'visible') setTimeout(_pollFallback, 500);
         });
@@ -1602,6 +1665,7 @@ body {
         });
       }, 10000);
 
+      window._pollFallback = _pollFallback;
     })();
     // ── fine PATCH v19 ──────────────────────────────────────────────────────────────────
 
@@ -1690,11 +1754,16 @@ body {
               }
             });
           }
+          window._lastSyncOk = Date.now();
         } catch(e) { /* ignora */ } finally {
           _busy4 = false;
         }
       }
-      setTimeout(function() { _poll4s(); setInterval(_poll4s, 4000); }, 5000);
+      // FIX v40: portato da 4s a 9s (sfalsato rispetto agli 8s di
+      // _pollFallback per non sovrapporsi) — stesso motivo: il risveglio
+      // attivo copre già il recupero rapido dopo un freeze.
+      setTimeout(function() { _poll4s(); setInterval(_poll4s, 9000); }, 5000);
+      window._poll4s = _poll4s;
 
       // ── 2) firebase.firestore: aggiunge postgres_changes su holter_counts ─
       var _fs20 = window.firebase.firestore;
@@ -1754,15 +1823,16 @@ body {
                   }, _pgHolterHandler)
                   .subscribe(function(status) {
                     if (status === 'SUBSCRIBED') {
+                      window._resetReconnectBackoff(pgKey + '_' + _pgChanId);
                       console.log('[v20] pg holter_counts SUBSCRIBED:', docId);
                     } else if (
                       (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED')
                       && _pgHActive
                     ) {
-                      console.warn('[v20] pg holter_counts error (' + status + '), reconnect in 4s:', docId);
+                      console.warn('[v20] pg holter_counts error (' + status + '):', docId);
                       try { _sb.removeChannel(pgH); } catch(e2) {}
                       pgH = null;
-                      setTimeout(_subscribePgHolter, 4000);
+                      window._scheduleReconnect(pgKey + '_' + _pgChanId, _subscribePgHolter);
                     }
                   });
               }
@@ -1809,6 +1879,130 @@ body {
 
     })();
     // ── fine PATCH v20 ──────────────────────────────────────────────────────────────────
+
+    // ── PATCH v40 — auto-ripresa dopo lunga inattività ──────────────────────────────────
+    // Sintomo: pagina lasciata aperta senza interagire per un po', poi al primo dato
+    // inserito gli altri non lo vedono in diretta finché non si fa Ctrl+F5.
+    // Causa: quando una tab resta inattiva a lungo, il browser rallenta/sospende i
+    // timer JS (e a volte il sistema operativo o un proxy di rete chiude le
+    // connessioni WebSocket inattive). Il socket Realtime di Supabase può restare
+    // "morto" senza che il client se ne accorga (nessun evento CHANNEL_ERROR/CLOSED
+    // arriva finché la tab è sospesa), quindi al ritorno l'utente scrive ma la
+    // notifica live ai colleghi non parte — pur restando salvato sul DB (per questo
+    // Ctrl+F5 "risolve": ricarica tutto da zero).
+    // Fix: ad ogni "risveglio" della pagina (tab tornata visibile, focus, rete che
+    // torna online, ripristino da cache di navigazione/bfcache) forziamo la
+    // ricostruzione completa del socket Realtime, invece di sperare che si
+    // riconnetta da solo — così l'app si riprende sempre in autonomia, senza reload.
+    (function() {
+      var _lastWake = 0;
+      function _forceRealtimeReconnect(reason) {
+        var now = Date.now();
+        if (now - _lastWake < 2000) return; // evita reconnect multipli ravvicinati
+        _lastWake = now;
+        console.log('[realtime] risveglio (' + reason + ') → riconnessione + recupero dati');
+
+        // FIX v40: il recupero degli ultimi dati (anche quelli salvati dai
+        // colleghi mentre questa tab era ferma) passa per REST, non per il
+        // WebSocket: va fatto SUBITO e in parallelo, non deve aspettare
+        // l'esito della riconnessione realtime qui sotto. _pollFallback e
+        // _poll4s confrontano la data di ultimo aggiornamento nel database
+        // con quella conosciuta finora e, se diversa, aggiornano subito la
+        // UI con l'ultima versione salvata — indipendentemente da quanto è
+        // rimasta ferma la pagina.
+        if (window._pollFallback) window._pollFallback();
+        if (window._poll4s) window._poll4s();
+        if (window._loadAssistenzeOnWake) window._loadAssistenzeOnWake();
+        // FIX v40: recupera anche banner/impostazioni admin (shim generico),
+        // che non hanno un polling di sicurezza dedicato.
+        if (window._genericOnSnapshotRefetchers) {
+          Object.keys(window._genericOnSnapshotRefetchers).forEach(function(k) {
+            try { window._genericOnSnapshotRefetchers[k](); } catch(e) {}
+          });
+        }
+
+        try {
+          if (window._sb && window._sb.realtime) {
+            window._sb.realtime.disconnect();
+            window._sb.realtime.connect();
+          }
+        } catch (e) {
+          console.warn('[realtime] errore durante la riconnessione forzata:', e);
+        }
+        // Secondo giro di recupero dopo che la riconnessione ha avuto modo
+        // di completarsi, come rete di sicurezza ulteriore.
+        setTimeout(function() {
+          if (window._pollFallback) window._pollFallback();
+          if (window._poll4s) window._poll4s();
+          if (window._loadAssistenzeOnWake) window._loadAssistenzeOnWake();
+          if (window._genericOnSnapshotRefetchers) {
+            Object.keys(window._genericOnSnapshotRefetchers).forEach(function(k) {
+              try { window._genericOnSnapshotRefetchers[k](); } catch(e2) {}
+            });
+          }
+        }, 1500);
+      }
+
+      document.addEventListener('visibilitychange', function() {
+        if (document.visibilityState === 'visible') _forceRealtimeReconnect('tab visibile');
+      });
+      window.addEventListener('focus', function() { _forceRealtimeReconnect('focus finestra'); });
+      window.addEventListener('online', function() { _forceRealtimeReconnect('rete online'); });
+      window.addEventListener('pageshow', function(e) {
+        if (e.persisted) _forceRealtimeReconnect('ripristino da bfcache');
+      });
+
+      window._forceRealtimeReconnect = _forceRealtimeReconnect;
+
+      // ── Indicatore di stato sincronizzazione ("● Live" / "○ Riconnessione...") ──
+      // Logica semplice e robusta: se _pollFallback/_poll4s hanno avuto
+      // successo negli ultimi 12s, siamo "live" — altrimenti stiamo
+      // riconnettendo. Non serve tracciare lo stato di ogni singolo canale:
+      // se i dati arrivano regolarmente, va tutto bene; se si fermano, lo
+      // vediamo qui prima ancora che qualcuno se ne accorga da un dato mancante.
+      var _syncWatchdogStarted = false;
+      function _updateSyncIndicator() {
+        var el = document.getElementById('_sync_status_indicator');
+        if (!el) return;
+        var label = document.getElementById('_sync_label');
+        // FIX v40: soglia alzata da 12s a 15s coerentemente con i nuovi
+        // intervalli di polling di base (8s/9s), per lasciare un margine
+        // e non mostrare falsi allarmi.
+        var ok = window._lastSyncOk && (Date.now() - window._lastSyncOk < 15000);
+        if (ok) {
+          el.className = 'live';
+          if (label) label.textContent = 'Live';
+        } else {
+          el.className = 'reconnecting';
+          if (label) label.textContent = 'Riconnessione…';
+        }
+      }
+      window._initSyncStatusIndicator = function() {
+        // Al primo avvio non esiste ancora uno storico di poll riusciti:
+        // assumiamo "live" di default (ottimistico) invece di mostrare
+        // "Riconnessione…" per i primi secondi solo perché il polling
+        // periodico non è ancora partito.
+        if (!window._lastSyncOk) window._lastSyncOk = Date.now();
+        _updateSyncIndicator();
+        if (_syncWatchdogStarted) return;
+        _syncWatchdogStarted = true;
+        setInterval(_updateSyncIndicator, 3000);
+      };
+      // Al risveglio, feedback immediato "Riconnessione…" mentre si
+      // ricollega, invece di aspettare che scada la soglia dei 12s.
+      var _origForceReconnect = _forceRealtimeReconnect;
+      _forceRealtimeReconnect = function(reason) {
+        var el = document.getElementById('_sync_status_indicator');
+        if (el) {
+          el.className = 'reconnecting';
+          var label = document.getElementById('_sync_label');
+          if (label) label.textContent = 'Riconnessione…';
+        }
+        return _origForceReconnect(reason);
+      };
+      window._forceRealtimeReconnect = _forceRealtimeReconnect;
+    })();
+    // ── fine PATCH v40 ───────────────────────────────────────────────────────────────────
   </script>
 <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
 
@@ -2078,6 +2272,50 @@ body {
   border-left: 6px solid transparent;
   border-right: 6px solid transparent;
   border-bottom: 6px solid #1a2236;
+}
+
+/* ── Indicatore di stato sincronizzazione ── */
+#_sync_status_indicator {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px 4px 7px;
+  background: rgba(255,255,255,0.9);
+  border: 1px solid rgba(0,0,0,0.08);
+  border-radius: 20px;
+  cursor: default;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  margin-left: 6px;
+  flex-shrink: 0;
+  transition: color 0.2s;
+}
+#_sync_dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: background 0.3s;
+}
+#_sync_status_indicator.live #_sync_dot {
+  background: #22c55e;
+  box-shadow: 0 0 0 2px rgba(34,197,94,0.25);
+  animation: _pres_pulse 2s infinite;
+}
+#_sync_status_indicator.reconnecting #_sync_dot {
+  background: #f59e0b;
+  box-shadow: 0 0 0 2px rgba(245,158,11,0.25);
+  animation: _sync_pulse_fast 0.9s infinite;
+}
+#_sync_status_indicator.reconnecting {
+  color: #92400e;
+}
+@keyframes _sync_pulse_fast {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(245,158,11,0.3); }
+  50%       { box-shadow: 0 0 0 5px rgba(245,158,11,0.12); }
 }
 ._pres_tt_title {
   font-size: 10px;
@@ -26842,6 +27080,13 @@ body {
       } catch(e) { console.warn('loadAssistenze error:', e); }
       setAssistenzeLoading(false);
     }
+    // FIX v40: esposta per il risveglio globale — a differenza di
+    // turni/cardiologists/holter/cardio_state, "assistenze" viene
+    // aggiornata SOLO via postgres_changes (nessun polling di sicurezza);
+    // un evento perso durante un freeze non viene recuperato dalla sola
+    // riconnessione del canale (non c'è replay degli eventi mancati), serve
+    // un fetch esplicito come questo.
+    window._loadAssistenzeOnWake = _loadAssistenze;
     async function _saveAssistenzeToSupabase(list) {
       await window._sb.from('kv_store').upsert({ id: 'assistenze/list', data: list, updated_at: new Date().toISOString() });
     }
@@ -26976,21 +27221,38 @@ body {
     }, []);
     (0, import_react6.useEffect)(function(){
       _loadAssistenze();
-      var chAss = window._sb.channel('assistenze_realtime_ch')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'kv_store', filter: 'id=eq.assistenze/list' }, function(p) {
-          if (p.new && p.new.data && Array.isArray(p.new.data)) {
-            var newList = p.new.data;
-            var newOpenCount = newList.filter(function(a){ return !a.completata; }).length;
-            if (newOpenCount > _prevAssistenzaOpenCount.current) {
-              setAssistenzaNewNotif(true);
-              setTimeout(function(){ setAssistenzaNewNotif(false); }, 3500);
+      var chAss;
+      var _chAssActive = true;
+      function _subscribeAssistenzeCh() {
+        if (!_chAssActive) return;
+        chAss = window._sb.channel('assistenze_realtime_ch')
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'kv_store', filter: 'id=eq.assistenze/list' }, function(p) {
+            if (p.new && p.new.data && Array.isArray(p.new.data)) {
+              var newList = p.new.data;
+              var newOpenCount = newList.filter(function(a){ return !a.completata; }).length;
+              if (newOpenCount > _prevAssistenzaOpenCount.current) {
+                setAssistenzaNewNotif(true);
+                setTimeout(function(){ setAssistenzaNewNotif(false); }, 3500);
+              }
+              _prevAssistenzaOpenCount.current = newOpenCount;
+              setAssistenze(newList);
             }
-            _prevAssistenzaOpenCount.current = newOpenCount;
-            setAssistenze(newList);
-          }
-        })
-        .subscribe();
-      return function(){ window._sb.removeChannel(chAss); };
+          })
+          .subscribe(function(status) {
+            // FIX v40: mancava la riconnessione automatica (stesso schema
+            // già applicato agli altri canali) — un errore lasciava la
+            // lista assistenze ferma fino al reload.
+            if (status === 'SUBSCRIBED') {
+              window._resetReconnectBackoff('assistenze_realtime_ch');
+            } else if ((status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') && _chAssActive) {
+              console.warn('[assistenze] canale in errore (' + status + ')');
+              try { window._sb.removeChannel(chAss); } catch(e2) {}
+              window._scheduleReconnect('assistenze_realtime_ch', _subscribeAssistenzeCh);
+            }
+          });
+      }
+      _subscribeAssistenzeCh();
+      return function(){ _chAssActive = false; try { window._sb.removeChannel(chAss); } catch(e2) {} };
     }, []);
     async function loadData() {
       try {
@@ -28214,6 +28476,15 @@ lucide-react/dist/esm/lucide-react.js:
         clearInterval(interval);
         nav.style.position = 'relative';
         nav.appendChild(badge);
+        // ── Indicatore di stato sincronizzazione ──────────────────
+        if (!document.getElementById('_sync_status_indicator')) {
+          var syncEl = document.createElement('div');
+          syncEl.id = '_sync_status_indicator';
+          syncEl.className = 'live';
+          syncEl.innerHTML = '<span id="_sync_dot"></span><span id="_sync_label">Live</span>';
+          nav.appendChild(syncEl);
+          window._initSyncStatusIndicator();
+        }
         // ── Presence indicator ──────────────────────────────────
         if (!document.getElementById('_presence_indicator')) {
           var presEl = document.createElement('div');
@@ -28246,6 +28517,8 @@ lucide-react/dist/esm/lucide-react.js:
     }
     var pi = document.getElementById('_presence_indicator');
     if(pi) pi.remove();
+    var si = document.getElementById('_sync_status_indicator');
+    if(si) si.remove();
   };
 
   // ── Presence channel ────────────────────────────────────────────────
