@@ -846,6 +846,44 @@ body {
       window._reconnectAttempts[key] = 0;
     };
 
+    // FIX v40: le cache dei canali per settimana holter (_bcHolterChs) e per
+    // percorso cardio_state (_bcCardioChs) non venivano MAI ripulite quando
+    // l'utente smetteva di consultare una settimana/percorso — restavano
+    // sottoscritte per sempre, per tutta la durata della sessione. In una
+    // sessione lunga (giorni), navigando tra molte settimane diverse, il
+    // numero di canali WebSocket aperti contemporaneamente cresce senza
+    // limite — con 20 persone che usano l'app, si rischia di avvicinarsi al
+    // limite di connessioni realtime concorrenti del progetto Supabase, e da
+    // quel punto in poi le sottoscrizioni NUOVE (una settimana appena aperta)
+    // possono silenziosamente non ricevere aggiornamenti live (restano
+    // comunque coperte dal polling, ma con più ritardo). Questo helper
+    // implementa un limite LRU: quando si supera il numero massimo di canali
+    // per quella cache, chiude quello usato meno di recente.
+    window._touchChannelLru = function(cache, key, maxSize) {
+      if (!cache.__order) cache.__order = [];
+      var idx = cache.__order.indexOf(key);
+      if (idx !== -1) cache.__order.splice(idx, 1);
+      cache.__order.push(key);
+      while (cache.__order.length > maxSize) {
+        var oldKey = cache.__order.shift();
+        if (oldKey === key) continue;
+        var oldCh = cache[oldKey];
+        if (oldCh) {
+          // FIX v40: disattiva PRIMA il retry automatico di quel canale,
+          // altrimenti removeChannel() scatena comunque il suo gestore
+          // CHANNEL_ERROR/CLOSED che (non sapendo di essere stato chiuso
+          // di proposito) lo ricrea pochi secondi dopo, vanificando
+          // l'eviction.
+          if (window._channelDeactivators && window._channelDeactivators[oldKey]) {
+            try { window._channelDeactivators[oldKey](); } catch (e) {}
+            delete window._channelDeactivators[oldKey];
+          }
+          try { _sb.removeChannel(oldCh); } catch (e) {}
+          delete cache[oldKey];
+        }
+      }
+    };
+
     // ── Salvataggio con Optimistic Concurrency Control ──────────────────────
     // Usa updated_at come lock ottimistico: la scrittura condizionale riesce
     // SOLO se il record non è stato modificato da un altro client nel frattempo.
@@ -896,8 +934,12 @@ body {
           await new Promise(function(res) { setTimeout(res, delay); });
           return _doSaveTurni(updated, retry + 1);
         }
+        // FIX v40: prima qui si arrendeva in silenzio (solo un console.error)
+        // — l'utente credeva che il salvataggio fosse andato a buon fine
+        // mentre la sua modifica veniva persa. Ora lancia un errore che
+        // arriva fino al chiamante e fa comparire il banner visibile.
         console.error('[turni] save: max retries exceeded');
-        return;
+        throw new Error('Salvataggio turni non riuscito: troppi tentativi falliti per conflitto con un altro utente. Riprova.');
       }
       // FIX v36: il DB ora contiene 'merged' con revisione newRev.
       // Qualsiasi snapshot ricevuto/bufferizzato prima di questa scrittura è
@@ -981,8 +1023,10 @@ body {
           await new Promise(function(res) { setTimeout(res, delay); });
           return _doSaveCardiologists(updated, retry + 1);
         }
+        // FIX v40: vedi nota in _doSaveTurni — stessa correzione per non
+        // fallire in silenzio.
         console.error('[cardiologists] save: max retries exceeded');
-        return;
+        throw new Error('Salvataggio anagrafica cardiologi non riuscito: troppi tentativi falliti per conflitto con un altro utente. Riprova.');
       }
       window._cardsBase = JSON.parse(JSON.stringify(merged));
     }
@@ -1208,6 +1252,13 @@ body {
         var chKey = ('bc_c_' + path).replace(/[^a-zA-Z0-9]/g, '_').substring(0, 64);
         var ch;
         var _bcCActive = true;
+        // FIX v40: registra come l'eviction LRU può disattivare il retry di
+        // QUESTO canale — altrimenti chiuderlo con _sb.removeChannel()
+        // scatena comunque lo stesso gestore CHANNEL_ERROR/CLOSED qui sotto,
+        // che (non sapendo di essere stato chiuso apposta) lo ricrea pochi
+        // secondi dopo, vanificando l'eviction.
+        if (!window._channelDeactivators) window._channelDeactivators = {};
+        window._channelDeactivators[chKey] = function() { _bcCActive = false; };
         function _cardioHandler(msg) {
           var p = msg.payload;
           if (!p) return;
@@ -1223,6 +1274,7 @@ body {
                 console.log('[bc] bc_c SUBSCRIBED:', path);
                 if (!window._bcCardioChs) window._bcCardioChs = {};
                 window._bcCardioChs[chKey] = ch;
+                window._touchChannelLru(window._bcCardioChs, chKey, 20);
                 window._resetReconnectBackoff(chKey);
               } else if (
                 // FIX v40: mancava la riconnessione automatica (a differenza
@@ -1245,6 +1297,7 @@ body {
           _bcCActive = false;
           try { _sb.removeChannel(ch); } catch(e2) {}
           if (window._bcCardioChs) delete window._bcCardioChs[chKey];
+          if (window._channelDeactivators) delete window._channelDeactivators[chKey];
         };
       };
     };
@@ -1302,11 +1355,16 @@ body {
 
       function _getBcHolterCh(weekKey, onReady) {
         var chKey = ('bc_h_' + weekKey).replace(/[^a-zA-Z0-9]/g, '_').substring(0, 64);
-        if (_bcHolterChs[chKey]) { onReady(_bcHolterChs[chKey]); return; }
+        if (_bcHolterChs[chKey]) {
+          window._touchChannelLru(_bcHolterChs, chKey, 20);
+          onReady(_bcHolterChs[chKey]);
+          return;
+        }
         var ch = _sb.channel(chKey);
         ch.subscribe(function(status) {
           if (status === 'SUBSCRIBED') {
             _bcHolterChs[chKey] = ch;
+            window._touchChannelLru(_bcHolterChs, chKey, 20);
             onReady(ch);
           }
         });
@@ -1373,6 +1431,7 @@ body {
                     if (status === 'SUBSCRIBED') {
                       if (!window._bcCardioChs) window._bcCardioChs = {};
                       window._bcCardioChs[chKey] = newCh;
+                      window._touchChannelLru(window._bcCardioChs, chKey, 20);
                       newCh.send({
                         type: 'broadcast', event: 'state_update',
                         payload: { data: val, _sid: window._sessionId }
@@ -1467,6 +1526,11 @@ body {
 
               var _chHolterActive = true;
               var chH;
+              // FIX v40: vedi nota analoga in _subscribeCardioCh — registra
+              // il deattivatore così l'eviction LRU può disinnescare il
+              // retry automatico prima di chiudere il canale.
+              if (!window._channelDeactivators) window._channelDeactivators = {};
+              window._channelDeactivators[chKey] = function() { _chHolterActive = false; };
 
               function _subscribeHolterBc() {
                 if (!_chHolterActive) return;
@@ -1475,6 +1539,7 @@ body {
                   .subscribe(function(status) {
                     if (status === 'SUBSCRIBED') {
                       _bcHolterChs[chKey] = chH;
+                      window._touchChannelLru(_bcHolterChs, chKey, 20);
                       window._resetReconnectBackoff(chKey);
                       console.log('[bc] bc_h SUBSCRIBED:', docId);
                     } else if (
@@ -1494,6 +1559,7 @@ body {
                 _chHolterActive = false;
                 try { _sb.removeChannel(chH); } catch(e2) {}
                 delete _bcHolterChs[chKey];
+                if (window._channelDeactivators) delete window._channelDeactivators[chKey];
                 if (window._hcOnNextCbs) delete window._hcOnNextCbs[docId];
               };
             };
@@ -1900,37 +1966,35 @@ body {
         var now = Date.now();
         if (now - _lastWake < 2000) return; // evita reconnect multipli ravvicinati
         _lastWake = now;
-        console.log('[realtime] risveglio (' + reason + ') → riconnessione + recupero dati');
+        console.log('[realtime] risveglio (' + reason + ') → recupero dati');
 
-        // FIX v40: il recupero degli ultimi dati (anche quelli salvati dai
-        // colleghi mentre questa tab era ferma) passa per REST, non per il
-        // WebSocket: va fatto SUBITO e in parallelo, non deve aspettare
-        // l'esito della riconnessione realtime qui sotto. _pollFallback e
-        // _poll4s confrontano la data di ultimo aggiornamento nel database
-        // con quella conosciuta finora e, se diversa, aggiornano subito la
-        // UI con l'ultima versione salvata — indipendentemente da quanto è
-        // rimasta ferma la pagina.
+        // FIX v40 (corretto): il recupero degli ultimi dati (anche quelli
+        // salvati dai colleghi mentre questa tab era ferma) passa per REST,
+        // NON per il WebSocket — quindi non dipende affatto dallo stato del
+        // socket realtime e funziona anche se quest'ultimo è morto.
         if (window._pollFallback) window._pollFallback();
         if (window._poll4s) window._poll4s();
         if (window._loadAssistenzeOnWake) window._loadAssistenzeOnWake();
-        // FIX v40: recupera anche banner/impostazioni admin (shim generico),
-        // che non hanno un polling di sicurezza dedicato.
         if (window._genericOnSnapshotRefetchers) {
           Object.keys(window._genericOnSnapshotRefetchers).forEach(function(k) {
             try { window._genericOnSnapshotRefetchers[k](); } catch(e) {}
           });
         }
 
-        try {
-          if (window._sb && window._sb.realtime) {
-            window._sb.realtime.disconnect();
-            window._sb.realtime.connect();
-          }
-        } catch (e) {
-          console.warn('[realtime] errore durante la riconnessione forzata:', e);
-        }
-        // Secondo giro di recupero dopo che la riconnessione ha avuto modo
-        // di completarsi, come rete di sicurezza ulteriore.
+        // NOTA: qui in precedenza veniva forzata anche una riconnessione
+        // "a tappeto" del socket con _sb.realtime.disconnect()+connect().
+        // Rimossa: con molti canali aperti insieme (turni + più percorsi
+        // cardio + più settimane holter + postgres_changes + assistenze +
+        // banner) chiudere tutto in un colpo solo scatena una cascata di
+        // eventi quasi simultanei che manda la libreria realtime-js in
+        // ricorsione interna fino allo stack overflow (RangeError), lasciando
+        // il socket permanentemente rotto — molto peggio del problema che
+        // doveva risolvere. La riconnessione dei singoli canali resta
+        // comunque garantita dal gestore di errore di ciascun canale (già
+        // presente più sopra), che agisce SOLO sul proprio canale e quindi
+        // non può innescare la stessa cascata.
+
+        // Secondo giro di recupero, come rete di sicurezza ulteriore.
         setTimeout(function() {
           if (window._pollFallback) window._pollFallback();
           if (window._poll4s) window._poll4s();
@@ -2003,6 +2067,17 @@ body {
       window._forceRealtimeReconnect = _forceRealtimeReconnect;
     })();
     // ── fine PATCH v40 ───────────────────────────────────────────────────────────────────
+
+    // FIX v40: log centralizzato per errori ed eccezioni asincrone non
+    // gestite altrove — utile per diagnosticare in futuro eventuali
+    // problemi (non forza nessun reload qui: i punti critici hanno già i
+    // loro meccanismi di recupero dedicati sopra; questo è solo visibilità).
+    window.addEventListener('error', function(e) {
+      console.error('[global] errore non gestito:', e.message, e.filename + ':' + e.lineno);
+    });
+    window.addEventListener('unhandledrejection', function(e) {
+      console.error('[global] promise rifiutata senza catch:', e.reason);
+    });
   </script>
 <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
 
@@ -27021,6 +27096,31 @@ body {
     const [data, setData] = (0, import_react6.useState)(null);
     const [turni, setTurni] = (0, import_react6.useState)([]);
     const [error, setError] = (0, import_react6.useState)(null);
+    // FIX v40: lo stato "error" esisteva già (usato per gli errori di
+    // caricamento dati) ma non veniva mai mostrato da nessuna parte nella
+    // UI — un utente non aveva modo di accorgersi di un problema. Aggiungo
+    // un banner visibile, cliccabile per chiuderlo, che compare ogni volta
+    // che "error" viene valorizzato (da qualunque punto dell'app).
+    (0, import_react6.useEffect)(function() {
+      var id = '_app_error_banner';
+      var existing = document.getElementById(id);
+      if (!error) {
+        if (existing) existing.remove();
+        return;
+      }
+      if (!existing) {
+        existing = document.createElement('div');
+        existing.id = id;
+        existing.title = 'Clicca per chiudere';
+        existing.style.cssText = 'position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:999998;background:#fef2f2;color:#991b1b;border:1px solid #fecaca;padding:11px 40px 11px 16px;border-radius:10px;font:600 13px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;box-shadow:0 4px 14px rgba(0,0,0,0.15);max-width:min(90vw,520px);text-align:left;cursor:pointer;line-height:1.4;';
+        document.body.appendChild(existing);
+        existing.onclick = function() { setError(null); };
+      }
+      existing.textContent = '\u26A0\uFE0F ' + error;
+    }, [error]);
+    (0, import_react6.useEffect)(function() {
+      return function() { var el = document.getElementById('_app_error_banner'); if (el) el.remove(); };
+    }, []);
     const [activeTab, setActiveTab] = (0, import_react6.useState)("holter");
     const [selectedGiorno, setSelectedGiorno] = (0, import_react6.useState)("");
     const [newDoctorsCount, setNewDoctorsCount] = (0, import_react6.useState)(0);
@@ -27287,7 +27387,13 @@ body {
       window._lastSaveTurniAt = Date.now();
       setTurni(updated);
       setData((prev) => prev ? { ...prev, turni: updated } : null);
-      await window._fbSaveTurni(updated);
+      // FIX v40: try/catch così, anche se il salvataggio fallisce (il toast
+      // già presente avvisa l'utente), la logica sottostante continua
+      // comunque invece di restare a metà — prima di questa correzione
+      // _doSaveTurni non lanciava mai, ora sì (vedi nota in _doSaveTurni).
+      try {
+        await window._fbSaveTurni(updated);
+      } catch (e) { /* il toast in window._fbSaveTurni ha già avvisato l'utente */ }
       // Dopo il salvataggio: applica subito eventuali aggiornamenti dei colleghi
       // in coda (ora che lo stato è pulito, il buffer può essere svuotato).
       setTimeout(function() {
@@ -27547,7 +27653,7 @@ body {
           ] })
         }),
 
-        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { display: activeTab === "medici" ? "block" : "none" }, children: /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(CardiologistsDB, { cardiologi: data.cardiologists, isAdmin: adminLoggedIn, onSave: async (updated) => { await window._fbSaveCardiologists(updated); setData((prev) => prev ? { ...prev, cardiologists: updated } : null); setNewDoctorsCount(updated.filter(function(c){return c.nuovo===true&&c.attivo!==false;}).length); } }) }),
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { display: activeTab === "medici" ? "block" : "none" }, children: /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(CardiologistsDB, { cardiologi: data.cardiologists, isAdmin: adminLoggedIn, onSave: async (updated) => { try { await window._fbSaveCardiologists(updated); } catch (e) { /* il toast in window._fbSaveCardiologists ha già avvisato l'utente */ } setData((prev) => prev ? { ...prev, cardiologists: updated } : null); setNewDoctorsCount(updated.filter(function(c){return c.nuovo===true&&c.attivo!==false;}).length); } }) }),
 
         activeTab === "assistenze" && /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { padding: "28px 24px", maxWidth: "800px", margin: "0 auto" }, children:
           /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: { display: "flex", flexDirection: "column", gap: "24px" }, children: [
@@ -27728,7 +27834,56 @@ body {
 
     ] });
   };
-  (0, import_client.createRoot)(document.getElementById("root")).render(/* @__PURE__ */ (0, import_jsx_runtime6.jsx)(App, {}));
+  // FIX v40: Error Boundary applicativo — prima un'eccezione imprevista
+  // durante il rendering (dato inatteso da un collega, edge case non
+  // gestito, ecc.) smontava tutto l'albero React e lasciava una pagina
+  // completamente bianca, senza alcun modo per l'utente di capire cosa
+  // fosse successo o di recuperare se non con un reload manuale — stesso
+  // sintomo "si blocca" di cui ci siamo occupati finora, ma con causa
+  // diversa (un crash di rendering, non un problema di rete/sync).
+  class _AppErrorBoundary extends import_react6.Component {
+    constructor(props) {
+      super(props);
+      this.state = { hasError: false, willAutoReload: false };
+    }
+    static getDerivedStateFromError() {
+      return { hasError: true };
+    }
+    componentDidCatch(error, info) {
+      console.error('[ErrorBoundary] Errore imprevisto durante il rendering:', error, info && info.componentStack);
+      try {
+        // Evita loop di reload infiniti: se abbiamo già ricaricato
+        // automaticamente nei ultimi 10s e si è rotto di nuovo subito,
+        // non insistiamo — meglio una pagina d'errore ferma con un
+        // pulsante manuale che un lampeggio continuo.
+        var lastCrash = Number(sessionStorage.getItem('_lastCrashReload') || 0);
+        var now = Date.now();
+        if (now - lastCrash > 10000) {
+          sessionStorage.setItem('_lastCrashReload', String(now));
+          this._autoReloadTimer = setTimeout(function() { location.reload(); }, 3000);
+          this.setState({ willAutoReload: true });
+        } else {
+          this.setState({ willAutoReload: false });
+        }
+      } catch (e) {}
+    }
+    componentWillUnmount() {
+      if (this._autoReloadTimer) clearTimeout(this._autoReloadTimer);
+    }
+    render() {
+      if (this.state.hasError) {
+        return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: { position: "fixed", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "16px", background: "#f8fafc", fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", padding: "24px", textAlign: "center", zIndex: 999999 }, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { fontSize: "40px" }, children: "\u26A0\uFE0F" }),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { fontSize: "17px", fontWeight: "700", color: "#1e293b" }, children: "Si \u00E8 verificato un problema imprevisto" }),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { fontSize: "14px", color: "#64748b", maxWidth: "360px" }, children: this.state.willAutoReload ? "La pagina si ricarica automaticamente tra pochi secondi..." : "Prova a ricaricare la pagina. Se il problema persiste, contatta chi gestisce l'app." }),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("button", { onClick: function(){ location.reload(); }, style: { padding: "11px 24px", background: "linear-gradient(135deg, #0ea5e9, #2563eb)", color: "white", border: "none", borderRadius: "10px", fontWeight: "600", fontSize: "14px", cursor: "pointer", boxShadow: "0 4px 12px rgba(14,165,233,0.35)" }, children: "Ricarica ora" })
+        ] });
+      }
+      return this.props.children;
+    }
+  }
+
+  (0, import_client.createRoot)(document.getElementById("root")).render(/* @__PURE__ */ (0, import_jsx_runtime6.jsx)(_AppErrorBoundary, { children: /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(App, {}) }));
 })();
 /*! Bundled license information:
 
