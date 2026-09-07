@@ -758,24 +758,77 @@ body {
     // dell'utente corrente, db=stato attuale DB al momento del salvataggio.
     // Regola: se solo local ha cambiato un campo → usa local; se solo DB ha
     // cambiato → usa DB; se entrambi → local vince (chi salva per ultimo).
-    function _mergeArraysThreeWay(base, local, db) {
-      var len = Math.max((base||[]).length, (local||[]).length, (db||[]).length);
+    //
+    // FIX v43 — BUG CRITICO RISOLTO: la versione precedente confrontava gli
+    // array PER POSIZIONE (base[i] vs local[i] vs db[i]). Se nel frattempo un
+    // collega aggiungeva/eliminava/riordinava un medico, l'indice non
+    // corrispondeva più allo stesso medico nei tre array: il merge mescolava
+    // i campi di DUE MEDICI DIVERSI, producendo un record "ibrido" con dati
+    // sbagliati (probabile causa dei disallineamenti segnalati). Ora il
+    // confronto avviene per CHIAVE STABILE (giorno per i turni, vercelName/
+    // name per i medici), non per posizione — l'ordine dell'array può
+    // cambiare liberamente senza rischio di scambiare i dati fra due voci.
+    function _mergeArraysThreeWay(base, local, db, keyFn) {
+      base = base || []; local = local || []; db = db || [];
+      keyFn = keyFn || function(item) {
+        if (item && item.giorno) return 'g:' + item.giorno;
+        var k = item && (item.vercelName || item.name || item.key);
+        return k ? ('k:' + String(k).toUpperCase().trim()) : null;
+      };
+      function indexByKey(arr) {
+        var m = {};
+        arr.forEach(function(item, idx) {
+          var k = keyFn(item, idx); if (k === null) k = 'i:' + idx;
+          m[k] = item;
+        });
+        return m;
+      }
+      var bIdx = indexByKey(base), lIdx = indexByKey(local), dIdx = indexByKey(db);
+      // Ordine di output: prima come in "local" (l'utente vede l'ordine che
+      // si aspetta), poi le voci nuove presenti solo in "db" (aggiunte da
+      // colleghi), poi eventuali residui di "base".
+      var order = [];
+      var seen = {};
+      function pushOrder(arr) {
+        arr.forEach(function(item, idx) {
+          var k = keyFn(item, idx); if (k === null) k = 'i:' + idx;
+          if (!seen[k]) { order.push(k); seen[k] = true; }
+        });
+      }
+      pushOrder(local); pushOrder(db); pushOrder(base);
+
       var result = [];
-      for (var i = 0; i < len; i++) {
-        var b = (base && base[i]) ? Object.assign({}, base[i]) : {};
-        var l = (local && local[i]) ? Object.assign({}, local[i]) : {};
-        var d = (db && db[i]) ? Object.assign({}, db[i]) : {};
+      order.forEach(function(k) {
+        var inBase = bIdx.hasOwnProperty(k), inLocal = lIdx.hasOwnProperty(k), inDb = dIdx.hasOwnProperty(k);
+        // Presente in base ma sparito sia da local che da db → eliminato da
+        // entrambi, va scartato.
+        if (inBase && !inLocal && !inDb) return;
+        // Presente in base e in db ma non in local → l'utente l'ha eliminato
+        // localmente: rispetta l'eliminazione.
+        if (inBase && !inLocal && inDb) return;
+        // Presente in base e in local ma non in db → un collega l'ha
+        // eliminato nel frattempo: se l'utente non l'ha modificato, rispetta
+        // l'eliminazione del collega; se invece l'ha modificato, lo si
+        // considera "resuscitato" con i valori locali (non si butta via
+        // silenziosamente una modifica appena fatta).
+        if (inBase && inLocal && !inDb) {
+          var _changedLocally = JSON.stringify(bIdx[k]) !== JSON.stringify(lIdx[k]);
+          if (!_changedLocally) return;
+        }
+        var b = bIdx[k] ? Object.assign({}, bIdx[k]) : {};
+        var l = lIdx[k] ? Object.assign({}, lIdx[k]) : {};
+        var d = dIdx[k] ? Object.assign({}, dIdx[k]) : {};
         var merged = {};
-        var keys = new Set([].concat(Object.keys(b), Object.keys(l), Object.keys(d)));
-        keys.forEach(function(k) {
-          var bv = b.hasOwnProperty(k) ? b[k] : '';
-          var lv = l.hasOwnProperty(k) ? l[k] : bv;
-          var dv = d.hasOwnProperty(k) ? d[k] : bv;
+        var fieldKeys = new Set([].concat(Object.keys(b), Object.keys(l), Object.keys(d)));
+        fieldKeys.forEach(function(fk) {
+          var bv = b.hasOwnProperty(fk) ? b[fk] : '';
+          var lv = l.hasOwnProperty(fk) ? l[fk] : bv;
+          var dv = d.hasOwnProperty(fk) ? d[fk] : bv;
           // Se local ha modificato rispetto alla base → usa local; altrimenti usa DB
-          merged[k] = (lv !== bv) ? lv : dv;
+          merged[fk] = (lv !== bv) ? lv : dv;
         });
         result.push(merged);
-      }
+      });
       return result;
     }
     // FIX v37: esposta per il live-merge degli aggiornamenti in arrivo
@@ -1113,8 +1166,21 @@ body {
       }
 
       // ── MERGE ATOMICO via Supabase RPC ──────────────────────────────────────
+      // FIX v43: aggiunto _withTimeout (8s), come già fatto per turni/kv_store/
+      // cardio_state. Senza questo timeout, se la connessione si degrada
+      // (es. durante una riconnessione realtime), questa chiamata può restare
+      // sospesa a tempo indefinito. Finché resta sospesa: (1) i flag "dirty"
+      // di hc/hp/spiro/pls NON vengono mai rimossi, quindi continuano a
+      // sovrascrivere per sempre i dati più recenti inseriti dai colleghi
+      // per quelle celle; (2) ignoreSnap resta true per sempre, quindi TUTTI
+      // gli aggiornamenti realtime successivi per questa settimana vengono
+      // ignorati. Risultato visibile: i numeri mostrati non corrispondono più
+      // a quelli realmente salvati, finché non si ricarica manualmente la
+      // pagina. Con il timeout, la Promise fallisce in modo pulito, il
+      // .catch() più sotto sblocca tutto e il prossimo salvataggio riparte
+      // normalmente.
       var _wk = weekKey;
-      return _sb.rpc('merge_holter_counts', {
+      return window._withTimeout(_sb.rpc('merge_holter_counts', {
         p_week_key:       _wk,
         p_hc:             dirtyHc,
         p_hp:             dirtyHp,
@@ -1127,7 +1193,7 @@ body {
         p_extra_sp:       dirtyExSp,
         p_extra_pl:       dirtyExPl,
         p_disp_overrides: dirtyDisp
-      }).then(function(result) {
+      }), 8000).then(function(result) {
         if (result.error) throw result.error;
         var newTs = new Date().toISOString();
         window._lastSavedUpdatedAt = newTs;
@@ -1144,7 +1210,10 @@ body {
         // ogni snapshot piu' vecchio (broadcast/polling/buffer in ritardo)
         // viene scartato da tutti i canali. Chiude la finestra in cui un
         // broadcast obsoleto di un collega cancellava valori appena salvati.
-        return _sb.from('holter_counts').select('updated_at').eq('week_key', _wk).maybeSingle()
+        return window._withTimeout(
+          _sb.from('holter_counts').select('updated_at').eq('week_key', _wk).maybeSingle(),
+          8000
+        )
           .then(function(r) {
             if (r && r.data && r.data.updated_at) {
               var _t = new Date(r.data.updated_at).getTime();
@@ -2025,6 +2094,34 @@ body {
       // se i dati arrivano regolarmente, va tutto bene; se si fermano, lo
       // vediamo qui prima ancora che qualcuno se ne accorga da un dato mancante.
       var _syncWatchdogStarted = false;
+      // FIX v42: a volte la riconnessione realtime resta bloccata a
+      // tempo indefinito (socket "zombie" che non fallisce né si
+      // ripristina). Se l'indicatore resta su "Riconnessione…" per più
+      // di _RELOAD_AFTER_MS consecutivi, ricarichiamo la pagina: è il modo
+      // più affidabile per uscire da uno stato di socket morto.
+      var _reconnectSince = null;
+      var _RELOAD_AFTER_MS = 10000; // soglia: modificabile
+      function _markSyncState(isLive) {
+        if (isLive) { _reconnectSince = null; }
+        else if (_reconnectSince === null) { _reconnectSince = Date.now(); }
+      }
+      function _checkReloadWatchdog() {
+        if (_reconnectSince === null) return;
+        if (Date.now() - _reconnectSince < _RELOAD_AFTER_MS) return;
+        var last = 0;
+        try { last = parseInt(sessionStorage.getItem('_lastAutoReload') || '0', 10); } catch(e) {}
+        if (Date.now() - last < 20000) {
+          // Abbiamo già ricaricato pochi secondi fa e siamo di nuovo
+          // bloccati: evitiamo un loop di reload continui, riproviamo
+          // tra 20s dall'ultimo reload.
+          console.warn('[sync] Ancora in riconnessione dopo un reload recente, attendo per evitare un loop.');
+          _reconnectSince = Date.now();
+          return;
+        }
+        try { sessionStorage.setItem('_lastAutoReload', String(Date.now())); } catch(e) {}
+        console.warn('[sync] Bloccato su "Riconnessione…" da oltre ' + _RELOAD_AFTER_MS + 'ms: ricarico la pagina.');
+        location.reload();
+      }
       function _updateSyncIndicator() {
         var el = document.getElementById('_sync_status_indicator');
         if (!el) return;
@@ -2033,12 +2130,15 @@ body {
         // intervalli di polling di base (8s/9s), per lasciare un margine
         // e non mostrare falsi allarmi.
         var ok = window._lastSyncOk && (Date.now() - window._lastSyncOk < 15000);
+        _markSyncState(ok);
         if (ok) {
           el.className = 'live';
           if (label) label.textContent = 'Live';
+          if (window._setEditLock) window._setEditLock(false);
         } else {
           el.className = 'reconnecting';
           if (label) label.textContent = 'Riconnessione…';
+          if (window._setEditLock) window._setEditLock(true);
         }
       }
       window._initSyncStatusIndicator = function() {
@@ -2051,6 +2151,7 @@ body {
         if (_syncWatchdogStarted) return;
         _syncWatchdogStarted = true;
         setInterval(_updateSyncIndicator, 3000);
+        setInterval(_checkReloadWatchdog, 1000);
       };
       // Al risveglio, feedback immediato "Riconnessione…" mentre si
       // ricollega, invece di aspettare che scada la soglia dei 12s.
@@ -2062,11 +2163,54 @@ body {
           var label = document.getElementById('_sync_label');
           if (label) label.textContent = 'Riconnessione…';
         }
+        _markSyncState(false);
+        if (window._setEditLock) window._setEditLock(true);
         return _origForceReconnect(reason);
       };
       window._forceRealtimeReconnect = _forceRealtimeReconnect;
     })();
     // ── fine PATCH v40 ───────────────────────────────────────────────────────────────────
+
+    // ── PATCH v41: blocco SOLO inserimento numeri in "Situazione Medici" ───
+    // Durante la riconnessione i campi numerici HC/HP/PLS (classe
+    // "m-count-input") vengono disabilitati via CSS (pointer-events:none),
+    // così non si può cliccare/digitare mentre i dati potrebbero non essere
+    // sincronizzati. Il resto dell'app (altre tab, filtri, ecc.) resta
+    // utilizzabile normalmente. Non tocchiamo lo stato/i props React: è
+    // solo una classe su <body> letta via CSS.
+    (function() {
+      var _locked = false;
+      var SEL = '.m-count-input';
+
+      window._setEditLock = function(locked) {
+        locked = !!locked;
+        if (locked === _locked) return;
+        _locked = locked;
+        document.body.classList.toggle('_num_edit_locked', locked);
+        if (locked) {
+          var ae = document.activeElement;
+          if (ae && ae.matches && ae.matches(SEL) && typeof ae.blur === 'function') {
+            ae.blur();
+          }
+        }
+      };
+
+      // Se un campo numero risulta comunque focalizzato mentre è bloccato
+      // (es. era già a fuoco prima della riconnessione), lo sfocura e ne
+      // impedisce la digitazione.
+      document.addEventListener('focusin', function(e) {
+        if (_locked && e.target && e.target.matches && e.target.matches(SEL)) {
+          e.target.blur();
+        }
+      }, true);
+      document.addEventListener('keydown', function(e) {
+        if (_locked && e.target && e.target.matches && e.target.matches(SEL)) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      }, true);
+    })();
+    // ── fine PATCH v41 ───────────────────────────────────────────────────────────────────
 
     // FIX v40: log centralizzato per errori ed eccezioni asincrone non
     // gestite altrove — utile per diagnosticare in futuro eventuali
@@ -2391,6 +2535,15 @@ body {
 @keyframes _sync_pulse_fast {
   0%, 100% { box-shadow: 0 0 0 2px rgba(245,158,11,0.3); }
   50%       { box-shadow: 0 0 0 5px rgba(245,158,11,0.12); }
+}
+
+/* ── Blocco editing numeri "Situazione Medici" durante la riconnessione (PATCH v41) ── */
+.m-count-input:disabled,
+body._num_edit_locked .m-count-input {
+  pointer-events: none;
+  opacity: 0.55;
+  cursor: not-allowed !important;
+  background: rgba(0,0,0,0.05) !important;
 }
 ._pres_tt_title {
   font-size: 10px;
@@ -25736,7 +25889,7 @@ body {
               // rilegge il DB per ottenere lo stato completamente aggiornato (merge incluso).
               if (pendingSnap.current) {
                 pendingSnap.current = null;
-                fsDb.collection('holter_counts').doc(weekKey).get().then(function(_cuDoc) {
+                window._withTimeout(fsDb.collection('holter_counts').doc(weekKey).get(), 8000).then(function(_cuDoc) {
                   if (!_cuDoc.exists) return;
                   fromRemote.current = true;
                   var _cd = _cuDoc.data();
@@ -26578,9 +26731,9 @@ body {
                           var rowComplete = d.maxPls ? (hcComplete && (d.soloHc || hpComplete) && plsComplete) : (hcComplete && (d.soloHc || hpComplete)); var nameGreen = rowComplete || (d.maxHc === "con." && d.maxHp === "con." && enteredHc !== undefined && enteredHc !== "" && enteredHp !== undefined && enteredHp !== "" && parseInt(enteredHc) >= 5 && parseInt(enteredHp) >= 5);
                           return flatRow([
                             { content: renderDocWithNote(fsBadges.length > 0 ? _docTip((0, _js)("span", { style: { fontWeight: nameGreen ? "700" : "500", fontSize: "11px", color: nameGreen ? "#16a34a" : "inherit", textDecoration: "none" }, children: [(0, _j)("div", { children: formatShortName(d.name) }), (0, _j)("div", { style: { display: "flex", flexWrap: "wrap", gap: "2px" }, children: fsBadges })] }), d.key, cardiologi) : _docTip((0, _j)("span", { style: { fontWeight: nameGreen ? "700" : "500", fontSize: "11px", color: nameGreen ? "#16a34a" : "inherit", textDecoration: "none" }, children: formatShortName(d.name) }), d.key, cardiologi), "d" + dayIdx + "_" + d.key, formatShortName(d.name)) },
-                            { content: (0, _j)("input", { type: "text", style: { width: "32px", height: "22px", textAlign: "center", fontSize: "11px", border: hcComplete ? "1px solid rgba(56,161,105,0.5)" : (enteredHc === "." ? "1px solid rgba(229,62,62,0.4)" : "1px solid rgba(0,0,0,0.12)"), borderRadius: "4px", outline: "none", background: hcComplete ? "rgba(56,161,105,0.12)" : (enteredHc === "." ? "rgba(229,62,62,0.06)" : "transparent"), color: hcComplete ? "#16a34a" : "#374151", fontWeight: hcComplete ? "700" : "400" }, value: enteredHc !== undefined ? enteredHc : "", placeholder: "", onChange: function(e) { var v = e.target.value; if (v === "" || v === "." || /^\d+$/.test(v) || /^\d+\.$/.test(v)) { var k = tcHcKey; window._holterLocalDirty = window._holterLocalDirty || {}; window._holterLocalDirty.hc = window._holterLocalDirty.hc || {}; window._holterLocalDirty.hc[k] = v; setHcCounts(function(p) { var n = Object.assign({}, p); n[k] = v; return n; }); } } }) },
+                            { content: (0, _j)("input", { type: "text", className: "m-count-input", style: { width: "32px", height: "22px", textAlign: "center", fontSize: "11px", border: hcComplete ? "1px solid rgba(56,161,105,0.5)" : (enteredHc === "." ? "1px solid rgba(229,62,62,0.4)" : "1px solid rgba(0,0,0,0.12)"), borderRadius: "4px", outline: "none", background: hcComplete ? "rgba(56,161,105,0.12)" : (enteredHc === "." ? "rgba(229,62,62,0.06)" : "transparent"), color: hcComplete ? "#16a34a" : "#374151", fontWeight: hcComplete ? "700" : "400" }, value: enteredHc !== undefined ? enteredHc : "", placeholder: "", onChange: function(e) { var v = e.target.value; if (v === "" || v === "." || /^\d+$/.test(v) || /^\d+\.$/.test(v)) { var k = tcHcKey; window._holterLocalDirty = window._holterLocalDirty || {}; window._holterLocalDirty.hc = window._holterLocalDirty.hc || {}; window._holterLocalDirty.hc[k] = v; setHcCounts(function(p) { var n = Object.assign({}, p); n[k] = v; return n; }); } } }) },
                             { content: enteredHc === "." ? (0, _j)("span", { style: { fontSize: "10px", color: "#e53e3e", fontWeight: "700", display: "block", textAlign: "center", textDecoration: "line-through" }, children: d.maxHc ? String(d.maxHc) : "" }) : hcDotSuffix ? (0, _j)("span", { style: { fontSize: "10px", color: "#16a34a", fontWeight: "700", display: "block", textAlign: "center", textDecoration: "line-through" }, children: d.maxHc ? String(d.maxHc) : "" }) : (0, _j)("span", { style: { fontSize: "10px", color: "rgba(0,0,0,0.4)", fontWeight: "500", display: "block", textAlign: "center" }, children: d.maxHc ? String(d.maxHc) : "" }) },
-                            { content: d.soloHc ? "" : (0, _j)("input", { type: "text", style: { width: "32px", height: "22px", textAlign: "center", fontSize: "11px", border: hpComplete ? "1px solid rgba(56,161,105,0.5)" : (enteredHp === "." ? "1px solid rgba(229,62,62,0.4)" : "1px solid rgba(0,0,0,0.12)"), borderRadius: "4px", outline: "none", background: hpComplete ? "rgba(56,161,105,0.12)" : (enteredHp === "." ? "rgba(229,62,62,0.06)" : "transparent"), color: hpComplete ? "#16a34a" : "#374151", fontWeight: hpComplete ? "700" : "400" }, value: enteredHp !== undefined ? enteredHp : "", placeholder: "", onChange: function(e) { var v = e.target.value; if (v === "" || v === "." || /^\d+$/.test(v) || /^\d+\.$/.test(v)) { var k = tcHpKey; window._holterLocalDirty = window._holterLocalDirty || {}; window._holterLocalDirty.hp = window._holterLocalDirty.hp || {}; window._holterLocalDirty.hp[k] = v; setHpCounts(function(p) { var n = Object.assign({}, p); n[k] = v; return n; }); } } }) },
+                            { content: d.soloHc ? "" : (0, _j)("input", { type: "text", className: "m-count-input", style: { width: "32px", height: "22px", textAlign: "center", fontSize: "11px", border: hpComplete ? "1px solid rgba(56,161,105,0.5)" : (enteredHp === "." ? "1px solid rgba(229,62,62,0.4)" : "1px solid rgba(0,0,0,0.12)"), borderRadius: "4px", outline: "none", background: hpComplete ? "rgba(56,161,105,0.12)" : (enteredHp === "." ? "rgba(229,62,62,0.06)" : "transparent"), color: hpComplete ? "#16a34a" : "#374151", fontWeight: hpComplete ? "700" : "400" }, value: enteredHp !== undefined ? enteredHp : "", placeholder: "", onChange: function(e) { var v = e.target.value; if (v === "" || v === "." || /^\d+$/.test(v) || /^\d+\.$/.test(v)) { var k = tcHpKey; window._holterLocalDirty = window._holterLocalDirty || {}; window._holterLocalDirty.hp = window._holterLocalDirty.hp || {}; window._holterLocalDirty.hp[k] = v; setHpCounts(function(p) { var n = Object.assign({}, p); n[k] = v; return n; }); } } }) },
                             { content: d.soloHc ? "" : (enteredHp === "." ? (0, _j)("span", { style: { fontSize: "10px", color: "#e53e3e", fontWeight: "700", display: "block", textAlign: "center", textDecoration: "line-through" }, children: d.maxHp ? String(d.maxHp) : "" }) : hpDotSuffix ? (0, _j)("span", { style: { fontSize: "10px", color: "#16a34a", fontWeight: "700", display: "block", textAlign: "center", textDecoration: "line-through" }, children: d.maxHp ? String(d.maxHp) : "" }) : (0, _j)("span", { style: { fontSize: "10px", color: "rgba(0,0,0,0.4)", fontWeight: "500", display: "block", textAlign: "center" }, children: d.maxHp ? String(d.maxHp) : "" })) },
                             ...(function() {
                               if (!d.maxPls) return [{ content: "" }, { content: "" }];
@@ -26589,7 +26742,7 @@ body {
                               var _rawPlsMax = parseInt(d.maxPls); var numPlsMax = !isNaN(_rawPlsMax) && dispOverrides[tcPlsKey] !== undefined ? dispOverrides[tcPlsKey] : _rawPlsMax;
                               var plsDotSuffixInner = enteredPls !== undefined && /^\d+\.$/.test(enteredPls); var plsComplete = !isNaN(numPlsMax) && enteredPls !== undefined && enteredPls !== "" && (parseInt(enteredPls) === numPlsMax || plsDotSuffixInner);
                               return [
-                                { content: (0, _j)("input", { type: "text", style: { width: "32px", height: "22px", textAlign: "center", fontSize: "11px", border: plsComplete ? "1px solid rgba(56,161,105,0.5)" : (enteredPls === "." ? "1px solid rgba(124,58,237,0.4)" : "1px solid rgba(0,0,0,0.12)"), borderRadius: "4px", outline: "none", background: plsComplete ? "rgba(56,161,105,0.12)" : (enteredPls === "." ? "rgba(124,58,237,0.06)" : "transparent"), color: plsComplete ? "#16a34a" : "#374151", fontWeight: plsComplete ? "700" : "400" }, value: enteredPls !== undefined ? enteredPls : "", placeholder: "", onChange: function(e) { var v = e.target.value; if (v === "" || v === "." || /^\d+$/.test(v) || /^\d+\.$/.test(v)) { var k = tcPlsKey; window._holterLocalDirty = window._holterLocalDirty || {}; window._holterLocalDirty.pls = window._holterLocalDirty.pls || {}; window._holterLocalDirty.pls[k] = v; setPlsCounts(function(p) { var n = Object.assign({}, p); n[k] = v; return n; }); } } }) },
+                                { content: (0, _j)("input", { type: "text", className: "m-count-input", style: { width: "32px", height: "22px", textAlign: "center", fontSize: "11px", border: plsComplete ? "1px solid rgba(56,161,105,0.5)" : (enteredPls === "." ? "1px solid rgba(124,58,237,0.4)" : "1px solid rgba(0,0,0,0.12)"), borderRadius: "4px", outline: "none", background: plsComplete ? "rgba(56,161,105,0.12)" : (enteredPls === "." ? "rgba(124,58,237,0.06)" : "transparent"), color: plsComplete ? "#16a34a" : "#374151", fontWeight: plsComplete ? "700" : "400" }, value: enteredPls !== undefined ? enteredPls : "", placeholder: "", onChange: function(e) { var v = e.target.value; if (v === "" || v === "." || /^\d+$/.test(v) || /^\d+\.$/.test(v)) { var k = tcPlsKey; window._holterLocalDirty = window._holterLocalDirty || {}; window._holterLocalDirty.pls = window._holterLocalDirty.pls || {}; window._holterLocalDirty.pls[k] = v; setPlsCounts(function(p) { var n = Object.assign({}, p); n[k] = v; return n; }); } } }) },
                                 { content: enteredPls === "." ? (0, _j)("span", { style: { fontSize: "10px", color: "#e53e3e", fontWeight: "700", display: "block", textAlign: "center", textDecoration: "line-through" }, children: String(d.maxPls) }) : plsDotSuffixInner ? (0, _j)("span", { style: { fontSize: "10px", color: "#16a34a", fontWeight: "700", display: "block", textAlign: "center", textDecoration: "line-through" }, children: String(d.maxPls) }) : (0, _j)("span", { style: { fontSize: "10px", color: "rgba(0,0,0,0.4)", fontWeight: "500", display: "block", textAlign: "center" }, children: String(d.maxPls) }) }
                               ];
                             })()
@@ -29127,7 +29280,16 @@ lucide-react/dist/esm/lucide-react.js:
       });
       if (deletedNuovi.length > 0) {
         try {
-          var r = await window._sb.from('kv_store').select('data').eq('id', 'dismissed_nuovo').maybeSingle();
+          // FIX v43: senza _withTimeout, se una di queste due chiamate resta
+          // sospesa (connessione instabile), l'intero salvataggio
+          // dell'anagrafica medici (return _prev(updated) più sotto) non
+          // parte MAI, perché è dopo l'await in questo stesso blocco try.
+          // La modifica al medico risulterebbe quindi non salvata, senza
+          // alcun errore visibile finché non si ricarica la pagina.
+          var r = await window._withTimeout(
+            window._sb.from('kv_store').select('data').eq('id', 'dismissed_nuovo').maybeSingle(),
+            8000
+          );
           var current = (r.data && r.data.data && Array.isArray(r.data.data)) ? r.data.data : [];
           deletedNuovi.forEach(function(d) {
             var key = (d.vercelName || d.name || '').toUpperCase().trim();
@@ -29136,12 +29298,12 @@ lucide-react/dist/esm/lucide-react.js:
               console.log('[dismissed_nuovo] Added: ' + key);
             }
           });
-          await window._sb.from('kv_store').upsert({
+          await window._withTimeout(window._sb.from('kv_store').upsert({
             id: 'dismissed_nuovo',
             data: current,
             updated_at: new Date().toISOString()
-          });
-        } catch(e) { console.warn('[dismissed_nuovo] save error:', e); }
+          }), 8000);
+        } catch(e) { console.warn('[dismissed_nuovo] save error (non bloccante):', e); }
       }
       return _prev(updated);
     };
