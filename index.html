@@ -16,7 +16,7 @@
     // sia la cache del browser sia quella CDN di GitHub Pages.
     // ⚠ Incrementa V ad ogni deploy (v22 → v23 ecc.)
     (function() {
-      var V = 'v40';
+      var V = 'v43';
       var k = '_page_ver';
       try {
         var prev = localStorage.getItem(k);
@@ -28,7 +28,7 @@
       } catch(e) {}
     })();
     </script>
-    <title>Situazione Medici</title><!-- v40 -->
+    <title>Situazione Medici</title><!-- v43 -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5" type="text/css" />
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -204,6 +204,52 @@ body {
 @keyframes tm-fadeIn {
   from { opacity: 0; transform: translateY(5px); }
   to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── ECG mode: clean, private workspace ─────────────────────────── */
+@keyframes ecgOverlayIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes ecgPanelIn {
+  from { opacity: 0; transform: translateY(10px) scale(.99); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.ecg-mode-panel { animation: ecgPanelIn .22s cubic-bezier(.2,.8,.2,1) both; }
+.ecg-doctor-card {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) 138px;
+  align-items: center;
+  gap: 18px !important;
+  transition: border-color .16s ease, box-shadow .16s ease, background .16s ease;
+}
+.ecg-doctor-card:hover {
+  transform: none !important;
+  background: #fff !important;
+  border-color: #cbd5e1 !important;
+  box-shadow: 0 5px 18px rgba(15,23,42,.07) !important;
+}
+.ecg-count-input {
+  transition: border-color .16s ease, box-shadow .16s ease, background .16s ease;
+  -moz-appearance: textfield;
+}
+.ecg-count-input::-webkit-outer-spin-button,
+.ecg-count-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.ecg-count-input:focus {
+  border-color: #0f766e !important;
+  box-shadow: 0 0 0 3px rgba(15,118,110,.12);
+  background: #fff !important;
+}
+.ecg-private-pill { white-space: nowrap; }
+@media (max-width: 640px) {
+  .ecg-overlay { padding: 10px !important; align-items: flex-end !important; }
+  .ecg-mode-panel { width: 100% !important; max-height: 94vh !important; border-radius: 20px 20px 0 0 !important; }
+  .ecg-panel-header { padding: 18px !important; }
+  .ecg-summary { padding: 12px 18px !important; }
+  .ecg-list { padding: 12px !important; }
+  .ecg-doctor-card { grid-template-columns: minmax(0, 1fr) 92px; gap: 10px !important; padding: 12px !important; }
+  .ecg-count-input { width: 92px !important; }
+  .ecg-private-pill span { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ecg-mode-panel, .ecg-doctor-card { animation: none !important; transition: none !important; }
 }
 
 /* ── Section heading uppercase ────────────────────────────────────── */
@@ -420,6 +466,40 @@ body {
         if (error) console.warn('[ECG Orari] Errore salvataggio Supabase:', error);
         else console.log('[ECG Orari] Salvati su Supabase (' + id + ')');
       } catch(e) { console.warn('[ECG Orari] Eccezione:', e); }
+    };
+
+    // ── Conteggi ECG personali e persistenti ────────────────────────────────
+    // Ogni account usa una chiave distinta: nessun collega carica o sovrascrive
+    // i conteggi di un altro utente.
+    window._getEcgUserScope = function() {
+      var user = window._authUser;
+      if (!user || (!user.id && !user.username)) return null;
+      return String(user.id || user.username).replace(/[^a-zA-Z0-9_-]/g, '_');
+    };
+    window._saveEcgInviatiToSupabase = async function(weekKey, counts) {
+      var userScope = window._getEcgUserScope();
+      if (!userScope) { console.warn('[ECG Personale] Sessione utente non disponibile'); return false; }
+      var id = 'ecg_inviati_personali/' + userScope + '/' + weekKey;
+      try {
+        var payload = {
+          id: id,
+          data: { week: weekKey, owner: userScope, saved_at: new Date().toISOString(), counts: counts },
+          updated_at: new Date().toISOString()
+        };
+        var { error } = await _sb.from('kv_store').upsert(payload);
+        if (error) { console.warn('[ECG Personale] Errore salvataggio Supabase:', error); return false; }
+        return true;
+      } catch(e) { console.warn('[ECG Personale] Eccezione:', e); return false; }
+    };
+    window._loadEcgInviatiFromSupabase = async function(weekKey) {
+      var userScope = window._getEcgUserScope();
+      if (!userScope) return {};
+      var id = 'ecg_inviati_personali/' + userScope + '/' + weekKey;
+      try {
+        var r = await _sb.from('kv_store').select('data').eq('id', id).maybeSingle();
+        if (r && r.data && r.data.data && r.data.data.owner === userScope && r.data.data.counts) return r.data.data.counts;
+      } catch(e) { console.warn('[ECG Personale] Errore caricamento:', e); }
+      return {};
     };
 
     // ── Session ID univoco per browser/utente (persiste tra reload) ───────────
@@ -25626,6 +25706,7 @@ body._num_edit_locked .m-count-input {
 
   var HolterView = function(_props) {
     var cardiologi = _props.cardiologi;
+    var onOpenEcg = _props.onOpenEcg;
     var _j = import_jsx_runtime3.jsx;
     var _js = import_jsx_runtime3.jsxs;
 
@@ -26625,7 +26706,7 @@ body._num_edit_locked .m-count-input {
                 className: "m-select",
                 style: { minWidth: "140px", maxWidth: "170px", padding: "8px 12px", fontSize: "13px", fontWeight: "600", border: "1.5px solid rgba(0,0,0,0.1)", borderRadius: "10px", background: "white", cursor: "pointer", outline: "none", color: "#1e293b" },
                 value: selectedDay,
-                onChange: function(e) { setSelectedDay(parseInt(e.target.value)); },
+                onChange: function(e) { setSelectedDay(parseInt(e.target.value)); setSelectedSession("mattina"); },
                 children: DAY_NAMES.map(function(name, idx) { return (0, _j)("option", { value: idx, children: name }, idx); })
               })
             ] }),
@@ -26755,7 +26836,32 @@ body._num_edit_locked .m-count-input {
               ] }),
               (0, _j)("div", { style: { flex: "0 0 auto", borderLeft: "2px solid rgba(217,119,6,0.15)", paddingLeft: "16px" }, children:
                 (0, _js)("div", { children: [
-                  (0, _j)("div", { style: { fontSize: "10px", fontWeight: "700", color: "#d97706", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: "6px" }, children: "Turni ECG" }),
+                  (0, _j)("button", {
+                    type: "button",
+                    className: "ecg-section-link",
+                    title: "Apri modalità ECG per la sessione selezionata",
+                    onClick: function() {
+                      if (!onOpenEcg) return;
+                      var shiftDoctors = ecgOnlyDocs.concat(fullShiftDocs).map(function(d) {
+                        var matched = _matchCardiologo(d.key, cardiologi) || {};
+                        var mainExtra = (vercelData.doctorExtra || {})[d.key] || {};
+                        return Object.assign({}, matched, {
+                          vercelName: d.key,
+                          name: d.name,
+                          surname: matched.surname || d.name,
+                          firstname: matched.firstname || "",
+                          _shiftType: d.isEcg ? "ecg" : "complete",
+                          // Gli stessi badge principali mostrati in Situazione Esami.
+                          _badgeSsr: matched.ssr === "SI" || (!matched.ssr && mainExtra.ssr),
+                          _badgePediatrici: matched.pediatrici === "SI" || (!matched.pediatrici && mainExtra.pediatrico),
+                          _badgeFirma: matched.firma === "SI" || (!matched.firma && mainExtra.firmaDigitale)
+                        });
+                      });
+                      onOpenEcg(shiftDoctors, DAY_NAMES[dayIdx] + " " + (selectedSession === "mattina" ? "Mattina" : "Pomeriggio"));
+                    },
+                    style: { appearance: "none", background: "transparent", border: "none", padding: 0, fontFamily: "inherit", fontSize: "10px", fontWeight: "700", color: "#d97706", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: "6px", cursor: "pointer", textDecoration: "underline", textUnderlineOffset: "3px" },
+                    children: "Turni ECG"
+                  }),
                   flatTable(
                     [
                       { label: "Cardiologo", width: "auto" },
@@ -27277,6 +27383,46 @@ body._num_edit_locked .m-count-input {
     const [activeTab, setActiveTab] = (0, import_react6.useState)("holter");
     const [selectedGiorno, setSelectedGiorno] = (0, import_react6.useState)("");
     const [newDoctorsCount, setNewDoctorsCount] = (0, import_react6.useState)(0);
+    // ── Modalità ECG: overlay a schermo intero con conteggio ECG inviati/medico ──
+    const [ecgModeOpen, setEcgModeOpen] = (0, import_react6.useState)(false);
+    const [ecgShiftDoctors, setEcgShiftDoctors] = (0, import_react6.useState)([]);
+    const [ecgModeContext, setEcgModeContext] = (0, import_react6.useState)("");
+    function openEcgModeForShift(doctors, contextLabel) {
+      setEcgShiftDoctors(Array.isArray(doctors) ? doctors : []);
+      setEcgModeContext(contextLabel || "");
+      setEcgModeOpen(true);
+    }
+    const [ecgSentCounts, setEcgSentCounts] = (0, import_react6.useState)({});
+    const [ecgCountsLoading, setEcgCountsLoading] = (0, import_react6.useState)(false);
+    const [ecgSaveState, setEcgSaveState] = (0, import_react6.useState)("saved");
+    const ecgSaveTimerRef = (0, import_react6.useRef)(null);
+    const ecgWeekKeyRef = (0, import_react6.useRef)(null);
+    (0, import_react6.useEffect)(function() {
+      if (!ecgModeOpen) return;
+      var wk = getMondayOfWeekH(new Date());
+      ecgWeekKeyRef.current = wk;
+      setEcgCountsLoading(true);
+      Promise.resolve(window._loadEcgInviatiFromSupabase ? window._loadEcgInviatiFromSupabase(wk) : {})
+        .then(function(counts) { setEcgSentCounts(counts || {}); })
+        .catch(function() { setEcgSentCounts({}); })
+        .finally(function() { setEcgCountsLoading(false); });
+    }, [ecgModeOpen]);
+    function updateEcgSentCount(doctorKey, value) {
+      var cleanValue = String(value == null ? "" : value).replace(/[^0-9]/g, "");
+      setEcgSaveState("saving");
+      setEcgSentCounts(function(prev) {
+        var next = Object.assign({}, prev, { [doctorKey]: cleanValue });
+        if (ecgSaveTimerRef.current) clearTimeout(ecgSaveTimerRef.current);
+        ecgSaveTimerRef.current = setTimeout(function() {
+          if (window._saveEcgInviatiToSupabase && ecgWeekKeyRef.current) {
+            Promise.resolve(window._saveEcgInviatiToSupabase(ecgWeekKeyRef.current, next))
+              .then(function(ok) { setEcgSaveState(ok === false ? "error" : "saved"); })
+              .catch(function() { setEcgSaveState("error"); });
+          }
+        }, 500);
+        return next;
+      });
+    }
     const [adminLoggedIn, setAdminLoggedIn] = (0, import_react6.useState)(() => sessionStorage.getItem('_adm') === '1');
     // Espone il setter globalmente così _applySession può attivarlo quando user.is_admin=true
     (0, import_react6.useEffect)(function(){ window._setAdminLoggedIn = setAdminLoggedIn; return function(){ window._setAdminLoggedIn = null; }; }, [setAdminLoggedIn]);
@@ -27686,6 +27832,18 @@ body._num_edit_locked .m-count-input {
         /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("p", { className: "text-base-content/60 text-sm", children: "Caricamento..." })
       ] }) });
     }
+    // Mostra esclusivamente i medici ECG del giorno e della sessione selezionati.
+    var ecgDoctorsList = (ecgShiftDoctors || []).slice().sort(function(a, b) {
+      return (a.surname || a.name || "").localeCompare(b.surname || b.name || "", "it");
+    });
+    var ecgCurrentUserLabel = (window._authUser && (window._authUser.display_name || window._authUser.username)) || "Account personale";
+    var ecgOnlyDoctorsCount = ecgDoctorsList.filter(function(c) { return c._shiftType !== "complete"; }).length;
+    var ecgCompleteDoctorsCount = ecgDoctorsList.filter(function(c) { return c._shiftType === "complete"; }).length;
+    var ecgTotalSent = ecgDoctorsList.reduce(function(total, c, i) {
+      var key = c.vercelName || ((c.surname || "") + " " + (c.firstname || "")).trim() || ("doc_" + i);
+      var n = parseInt(ecgSentCounts[key], 10);
+      return total + (isNaN(n) ? 0 : n);
+    }, 0);
     return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "flex flex-col h-screen bg-base-100", children: [
       assistenzaNewNotif && /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { position: "fixed", top: "18px", right: "24px", zIndex: 9999, background: "linear-gradient(135deg,#16a34a,#22c55e)", color: "white", fontWeight: "700", fontSize: "13px", borderRadius: "12px", padding: "10px 18px", boxShadow: "0 4px 20px rgba(22,163,74,0.45)", animation: "fadeInDown 0.35s ease", display: "flex", alignItems: "center", gap: "8px", pointerEvents: "none" }, children: [
         /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { children: "Nuova assistenza aggiunta" })
@@ -27737,7 +27895,7 @@ body._num_edit_locked .m-count-input {
         
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "flex-1 overflow-y-auto", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { padding: "20px 24px", display: activeTab === "holter" ? "flex" : "none", justifyContent: "center", alignItems: "flex-start", overflowX: "auto" }, children: /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { width: "fit-content", minWidth: "0", background: "rgba(255,255,255,0.92)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)", border: "1px solid rgba(255,255,255,0.6)", borderRadius: "18px", boxShadow: "0 1px 3px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.07)", overflow: "visible" }, children: /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(HolterView, { turni, cardiologi: data.cardiologists }) }) }),
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { padding: "20px 24px", display: activeTab === "holter" ? "flex" : "none", justifyContent: "center", alignItems: "flex-start", overflowX: "auto" }, children: /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { width: "fit-content", minWidth: "0", background: "rgba(255,255,255,0.92)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)", border: "1px solid rgba(255,255,255,0.6)", borderRadius: "18px", boxShadow: "0 1px 3px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.07)", overflow: "visible" }, children: /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(HolterView, { turni, cardiologi: data.cardiologists, onOpenEcg: openEcgModeForShift }) }) }),
         activeTab === "impostazioni" && adminLoggedIn && /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { padding: "24px 20px", maxWidth: "600px", margin: "0 auto" }, children:
           /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: { background: "white", borderRadius: "16px", border: "1px solid rgba(0,0,0,0.06)", boxShadow: "0 2px 12px rgba(0,0,0,0.06)", overflow: "hidden" }, children: [
             /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: { background: "linear-gradient(135deg, #dc2626 0%, #ef4444 100%)", padding: "20px 24px", color: "white" }, children: [
@@ -27983,6 +28141,74 @@ body._num_edit_locked .m-count-input {
             ] })
           ] })
         ] })
+      }),
+
+      ecgModeOpen && /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", {
+        className: "ecg-overlay",
+        style: { position: "fixed", inset: 0, zIndex: 100000, background: "rgba(15,23,42,0.62)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)", display: "flex", alignItems: "center", justifyContent: "center", padding: "24px", animation: "ecgOverlayIn 0.18s ease both" },
+        onClick: function(e) { if (e.target === e.currentTarget) setEcgModeOpen(false); },
+        children: /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", {
+          className: "ecg-mode-panel",
+          style: { width: "min(760px, 96vw)", maxHeight: "88vh", display: "flex", flexDirection: "column", background: "#f8fafc", borderRadius: "20px", overflow: "hidden", boxShadow: "0 30px 80px rgba(15,23,42,0.34)", border: "1px solid rgba(255,255,255,0.65)" },
+          children: [
+            /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "ecg-panel-header", style: { padding: "20px 24px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "16px", background: "#ffffff", borderBottom: "1px solid #e2e8f0", flexShrink: 0 }, children: [
+              /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: { display: "flex", alignItems: "center", gap: "12px", minWidth: 0 }, children: [
+                /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { width: "40px", height: "40px", borderRadius: "12px", background: "#ccfbf1", color: "#0f766e", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }, children: /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(Activity, { size: 21 }) }),
+                /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: { minWidth: 0 }, children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { fontSize: "17px", fontWeight: "800", color: "#0f172a", letterSpacing: "-0.2px" }, children: "ECG inviati" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { fontSize: "12px", color: "#64748b", marginTop: "2px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, children: ecgModeContext || "Sessione selezionata" })
+                ] })
+              ] }),
+              /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: { display: "flex", alignItems: "center", gap: "8px" }, children: [
+                /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "ecg-private-pill", title: "Questi dati sono visibili solo nel tuo account", style: { display: "flex", alignItems: "center", gap: "6px", padding: "7px 10px", borderRadius: "999px", background: "#f0fdfa", border: "1px solid #99f6e4", color: "#115e59", fontSize: "11px", fontWeight: "700", maxWidth: "220px", overflow: "hidden" }, children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { children: "Privato · " + ecgCurrentUserLabel })
+                ] }),
+                /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("button", { "aria-label": "Chiudi modalità ECG", onClick: function() { setEcgModeOpen(false); }, style: { width: "36px", height: "36px", borderRadius: "10px", border: "1px solid #e2e8f0", background: "#fff", color: "#475569", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }, children: /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(X, { size: 18 }) })
+              ] })
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "ecg-summary", style: { padding: "12px 24px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", background: "#f8fafc", borderBottom: "1px solid #e2e8f0", flexShrink: 0 }, children: [
+              /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { style: { fontSize: "12px", color: "#64748b" }, children: "Inserisci il numero inviato per ciascun medico" }),
+              /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: { display: "flex", alignItems: "center", gap: "8px" }, children: [
+                /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { style: { padding: "3px 7px", borderRadius: "3px", background: "#fffbeb", border: "1px solid rgba(217,119,6,0.3)", color: "#d97706", fontSize: "10px", fontWeight: "700" }, children: ecgOnlyDoctorsCount + " ECG" }),
+                /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { style: { padding: "3px 7px", borderRadius: "3px", background: "#eff6ff", border: "1px solid rgba(37,99,235,0.35)", color: "#2563eb", fontSize: "10px", fontWeight: "700" }, children: ecgCompleteDoctorsCount + " completi" }),
+                /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { style: { padding: "5px 9px", borderRadius: "8px", background: "#0f766e", color: "#fff", fontSize: "11px", fontWeight: "800" }, children: "Totale " + ecgTotalSent })
+              ] })
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { className: "ecg-list", style: { padding: "16px 20px", overflowY: "auto", flex: 1 }, children:
+              ecgCountsLoading
+                ? /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: { display: "flex", alignItems: "center", justifyContent: "center", gap: "10px", padding: "46px 0", color: "#64748b", fontSize: "13px", fontWeight: "600" }, children: [/* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { className: "loading loading-spinner loading-sm" }), "Caricamento dei tuoi dati..."] })
+                : (ecgDoctorsList.length === 0
+                    ? /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: { textAlign: "center", padding: "46px 16px", color: "#64748b" }, children: [
+                        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(Activity, { size: 30, style: { opacity: .35, margin: "0 auto 10px" } }),
+                        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { fontSize: "13px", fontWeight: "700", color: "#334155" }, children: "Nessun medico ECG in turno" }),
+                        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { fontSize: "12px", marginTop: "4px" }, children: "Controlla il giorno o la sessione selezionata." })
+                      ] })
+                    : /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { display: "flex", flexDirection: "column", gap: "8px" }, children: ecgDoctorsList.map(function(c, i) {
+                        var dKey = c.vercelName || ((c.surname || "") + " " + (c.firstname || "")).trim() || ("doc_" + i);
+                        var dLabel = ((c.surname || "") + (c.firstname ? " " + c.firstname : "")).trim() || c.name || "Medico";
+                        var isCompleteDoctor = c._shiftType === "complete";
+                        var typeLabel = isCompleteDoctor ? "TURNO COMPLETO" : (c.ecg75 ? "ECG 75" : (c.ecg100 ? "ECG 100" : "SOLO ECG"));
+                        return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { key: dKey + "_" + i, className: "ecg-doctor-card " + (isCompleteDoctor ? "ecg-doctor-card-complete" : "ecg-doctor-card-ecg"), style: { background: isCompleteDoctor ? "#f8fbff" : "#fffdf7", border: "1px solid " + (isCompleteDoctor ? "#bfdbfe" : "#fde68a"), borderLeft: "4px solid " + (isCompleteDoctor ? "#3b82f6" : "#d97706"), borderRadius: "13px", padding: "13px 14px", boxShadow: "0 1px 2px rgba(15,23,42,.03)" }, children: [
+                          /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: { minWidth: 0 }, children: [
+                            /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: { display: "flex", alignItems: "center", flexWrap: "wrap", gap: "4px 8px", minWidth: 0 }, children: [
+                              /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { style: { fontWeight: "750", fontSize: "14px", color: "#1e293b", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, children: dLabel }),
+                              /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { style: { flexShrink: 0, fontSize: "9px", fontWeight: "600", color: isCompleteDoctor ? "#2563eb" : "#d97706", background: "transparent", border: "1px solid " + (isCompleteDoctor ? "rgba(37,99,235,0.35)" : "rgba(217,119,6,0.3)"), borderRadius: "3px", padding: "0 3px" }, children: typeLabel }),
+                              c._badgeSsr && /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { title: "Convenzione SSR", style: { flexShrink: 0, fontSize: "9px", fontWeight: "600", color: "#6366f1", border: "1px solid rgba(99,102,241,0.3)", borderRadius: "3px", padding: "0 3px" }, children: "SSR" }),
+                              c._badgePediatrici && /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { title: "Pazienti Pediatrici", style: { flexShrink: 0, fontSize: "9px", fontWeight: "600", color: "#ec4899", border: "1px solid rgba(236,72,153,0.3)", borderRadius: "3px", padding: "0 3px" }, children: "PEDIATRICI" }),
+                              c._badgeFirma && /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { title: "Firma Digitale", style: { flexShrink: 0, fontSize: "9px", color: "#374151", border: "1px solid rgba(55,65,81,0.3)", borderRadius: "3px", padding: "1px 3px", display: "inline-flex", alignItems: "center" }, children: "FIRMA" })
+                            ] }),
+                          ] }),
+                          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("input", { type: "number", min: "0", step: "1", className: "ecg-count-input", inputMode: "numeric", "aria-label": "ECG inviati da " + dLabel, placeholder: "0", value: ecgSentCounts[dKey] || "", onChange: function(e) { updateEcgSentCount(dKey, e.target.value); }, style: { width: "138px", padding: "10px 12px", fontSize: "15px", border: "1.5px solid #cbd5e1", borderRadius: "10px", outline: "none", background: "#fff", color: "#0f172a", fontWeight: "800", textAlign: "center", flexShrink: 0 } })
+                        ] });
+                      }) })
+                  )
+            }),
+            /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: { padding: "12px 20px", borderTop: "1px solid #e2e8f0", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexShrink: 0, background: "#fff" }, children: [
+              /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("span", { style: { fontSize: "11px", fontWeight: "650", color: ecgSaveState === "error" ? "#b91c1c" : (ecgSaveState === "saving" ? "#a16207" : "#64748b") }, children: [ecgSaveState === "saving" ? "Salvataggio..." : (ecgSaveState === "error" ? "Salvataggio non riuscito" : "Salvato automaticamente · solo per te")] }),
+              /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("button", { onClick: function() { setEcgModeOpen(false); }, style: { padding: "9px 18px", background: "#0f172a", color: "#fff", border: "none", borderRadius: "10px", fontWeight: "750", fontSize: "12px", cursor: "pointer" }, children: "Fine" })
+            ] })
+          ]
+        })
       }),
 
     ] });
