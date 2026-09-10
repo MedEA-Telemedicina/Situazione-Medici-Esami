@@ -27406,11 +27406,11 @@ body._num_edit_locked .m-count-input {
     const [ecgClock, setEcgClock] = (0, import_react6.useState)(Date.now());
     const [ecgShiftDoctors, setEcgShiftDoctors] = (0, import_react6.useState)([]);
     const [ecgModeContext, setEcgModeContext] = (0, import_react6.useState)("");
-    // Aggiorna il pallino "in turno" ECG anche se il pannello resta aperto.
+    // Aggiorna il pallino online/offline ECG in diretta anche se il pannello resta aperto.
     (0, import_react6.useEffect)(function() {
       if (!ecgModeOpen) return;
       setEcgClock(Date.now());
-      var timer = setInterval(function() { setEcgClock(Date.now()); }, 30000);
+      var timer = setInterval(function() { setEcgClock(Date.now()); }, 5000);
       return function() { clearInterval(timer); };
     }, [ecgModeOpen]);
     function openEcgModeForShift(doctors, contextLabel) {
@@ -28238,7 +28238,7 @@ body._num_edit_locked .m-count-input {
                         return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { key: dKey + "_" + i, className: "ecg-doctor-card " + (isCompleteDoctor ? "ecg-doctor-card-complete" : "ecg-doctor-card-ecg"), style: { background: isCompleteDoctor ? "#f8fbff" : "#fffdf7", border: "1px solid " + (isCompleteDoctor ? "#bfdbfe" : "#fde68a"), borderLeft: "4px solid " + (isCompleteDoctor ? "#3b82f6" : "#d97706"), borderRadius: "9px", padding: "6px 10px", boxShadow: "0 1px 2px rgba(15,23,42,.03)" }, children: [
                           /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: { minWidth: 0 }, children: [
                             /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: { display: "flex", alignItems: "center", flexWrap: "wrap", gap: "2px 5px", minWidth: 0 }, children: [
-                              isEcgOnShift && /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { title: "In turno ora", "aria-label": "In turno ora", style: { width: "8px", height: "8px", borderRadius: "50%", background: "#22c55e", boxShadow: "0 0 0 2px rgba(34,197,94,0.16)", flexShrink: 0 } }),
+                              !isCompleteDoctor && /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { title: isEcgOnShift ? "Online · in turno ora" : "Offline · fuori orario", "aria-label": isEcgOnShift ? "Online · in turno ora" : "Offline · fuori orario", style: { width: "8px", height: "8px", borderRadius: "50%", background: isEcgOnShift ? "#22c55e" : "#ef4444", boxShadow: isEcgOnShift ? "0 0 0 2px rgba(34,197,94,0.16)" : "0 0 0 2px rgba(239,68,68,0.16)", flexShrink: 0, transition: "background-color .25s ease, box-shadow .25s ease" } }),
                               /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { style: { fontWeight: "750", fontSize: "11px", color: "#1e293b", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, children: dLabel }),
                               /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { style: { flexShrink: 0, fontSize: "9px", fontWeight: "600", color: isCompleteDoctor ? "#2563eb" : "#d97706", background: "transparent", border: "1px solid " + (isCompleteDoctor ? "rgba(37,99,235,0.35)" : "rgba(217,119,6,0.3)"), borderRadius: "3px", padding: "0 3px" }, children: typeLabel }),
                               c._badgeSsr && /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { title: "Convenzione SSR", style: { flexShrink: 0, fontSize: "9px", fontWeight: "600", color: "#6366f1", border: "1px solid rgba(99,102,241,0.3)", borderRadius: "3px", padding: "0 3px" }, children: "SSR" }),
