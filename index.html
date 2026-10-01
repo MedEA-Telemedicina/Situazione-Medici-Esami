@@ -26158,14 +26158,17 @@ body._num_edit_locked .m-count-input {
     hcDocs.sort(function(a, b) { return a.name.localeCompare(b.name, 'it'); });
 
     // Turni Holter: doctors from holterWeeks with 'confermato' for this day
+    // Conferma C16: il medico fa SOLO HC con massimo 16 (nessun HP)
+    function _isHolterC16(s) { return typeof s === 'string' && /^(c|confermato)[\s_\-]*16$/i.test(s.trim()); }
     var holterDocs = [];
     if (vercelData.holterWeeks) {
       Object.entries(vercelData.holterWeeks).forEach(function(entry) {
         var docKey = entry[0], docData = entry[1];
         if (!docData || docData.ferie) return;
         var slot = getSlotForDay(docData.slots, dayIdx);
-        if (slot !== 'confermato') return;
-        holterDocs.push({ name: docKey.replace(/\u00B7/g, '.'), key: docKey, maxHc: 10, maxHp: 10 });
+        var _is16 = _isHolterC16(slot);
+        if (slot !== 'confermato' && !_is16) return;
+        holterDocs.push({ name: docKey.replace(/\u00B7/g, '.'), key: docKey, is16: _is16, maxHc: _is16 ? 16 : 10, maxHp: _is16 ? 0 : 10 });
       });
       holterDocs.sort(function(a, b) { return a.name.localeCompare(b.name, 'it'); });
     }
@@ -26177,8 +26180,9 @@ body._num_edit_locked .m-count-input {
         var docKey = entry[0], docData = entry[1];
         if (!docData || docData.ferie) return;
         var slot = getSlotForDay(docData.slots, 6); // domenica = indice 6
-        if (slot !== 'confermato') return;
-        holterDocsSunday.push({ name: docKey.replace(/\u00B7/g, '.'), key: docKey });
+        var _is16s = _isHolterC16(slot);
+        if (slot !== 'confermato' && !_is16s) return;
+        holterDocsSunday.push({ name: docKey.replace(/\u00B7/g, '.'), key: docKey, is16: _is16s });
       });
       holterDocsSunday.sort(function(a, b) { return a.name.localeCompare(b.name, 'it'); });
     }
@@ -26235,7 +26239,7 @@ body._num_edit_locked .m-count-input {
       var htKey = "d" + dayIdx + "_ht_hc_" + d.key;
       var v = hcCounts[htKey];
       if (v !== undefined && v !== "") totalHC += parseInt(v) || 0;
-      maxHC += dispOverrides[htKey] !== undefined ? dispOverrides[htKey] : 10;
+      maxHC += dispOverrides[htKey] !== undefined ? dispOverrides[htKey] : (d.is16 ? 16 : 10);
     });
     // Add manually added HC doctors
     extraHcDocsDay.forEach(function(d) {
@@ -26263,6 +26267,7 @@ body._num_edit_locked .m-count-input {
     });
     // Add holter HP totals
     holterDocs.forEach(function(d) {
+      if (d.is16) return; // C16: solo HC
       var htKey = "d" + dayIdx + "_ht_hp_" + d.key;
       var v = hpCounts[htKey];
       if (v !== undefined && v !== "") totalHP += parseInt(v) || 0;
@@ -26818,18 +26823,19 @@ body._num_edit_locked .m-count-input {
                         var dExtraHt = (vercelData.doctorExtra || {})[d.key] || {};
                         var _cMht = _matchCardiologo(d.key, cardiologi) || {};
                         var htBadges = [];
+                        if (d.is16) htBadges.push((0, _j)("span", { title: "Turno Holter C16: solo HC, max 16", style: { fontSize: "9px", fontWeight: "700", color: "#8b5cf6", border: "1px solid rgba(139,92,246,0.4)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "SOLO HC 16" }, "c16"));
                         if (_cMht.ssr === "SI" || (!_cMht.ssr && dExtraHt.ssr)) htBadges.push((0, _j)("span", { title: "Convenzione SSR", style: { fontSize: "9px", fontWeight: "600", color: "#6366f1", border: "1px solid rgba(99,102,241,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "SSR" }, "ssr"));
                         if (_cMht.pediatrici === "SI" || (!_cMht.pediatrici && dExtraHt.pediatrico)) htBadges.push((0, _j)("span", { title: "Pazienti Pediatrici", style: { fontSize: "9px", fontWeight: "600", color: "#ec4899", border: "1px solid rgba(236,72,153,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "PEDIATRICI" }, "ped"));
                         if (_cMht.firma === "SI" || (!_cMht.firma && dExtraHt.firmaDigitale)) htBadges.push((0, _j)("span", { title: "Firma Digitale", style: { fontSize: "9px", color: "#374151", border: "1px solid rgba(55,65,81,0.3)", borderRadius: "3px", padding: "1px 3px", marginLeft: "2px", display: "inline-flex", alignItems: "center" }, children: "FIRMA" }, "firma"));
                         var enteredHtHc = hcCounts[htHcKey];
                         var enteredHtHp = hpCounts[htHpKey];
-                        var htHcDone = enteredHtHc !== undefined && enteredHtHc !== "" && parseInt(enteredHtHc) >= 10;
-                        var htHpDone = enteredHtHp !== undefined && enteredHtHp !== "" && parseInt(enteredHtHp) >= 10;
+                        var htHcDone = enteredHtHc !== undefined && enteredHtHc !== "" && parseInt(enteredHtHc) >= (d.is16 ? 16 : 10);
+                        var htHpDone = d.is16 ? true : (enteredHtHp !== undefined && enteredHtHp !== "" && parseInt(enteredHtHp) >= 10);
                         var htAllDone = htHcDone && htHpDone;
                         return flatRow([
                           { content: renderDocWithNote(htBadges.length > 0 ? _docTip((0, _js)("span", { style: { fontWeight: htAllDone ? "700" : "500", fontSize: "11px", color: htAllDone ? "#16a34a" : "inherit" }, children: [(0, _j)("div", { children: formatShortName(d.name) }), (0, _j)("div", { style: { display: "flex", flexWrap: "wrap", gap: "2px" }, children: htBadges })] }), d.key, cardiologi) : _docTip((0, _j)("span", { style: { fontWeight: htAllDone ? "700" : "500", fontSize: "11px", color: htAllDone ? "#16a34a" : "inherit" }, children: formatShortName(d.name) }), d.key, cardiologi), "d" + dayIdx + "_" + d.key, formatShortName(d.name)) },
-                          { content: renderCountCell(hcCounts, setHcCounts, htHcKey, 10, "#e53e3e", "hc") },
-                          { content: renderCountCell(hpCounts, setHpCounts, htHpKey, 10, "#38a169", "hp") }
+                          { content: renderCountCell(hcCounts, setHcCounts, htHcKey, d.is16 ? 16 : 10, "#e53e3e", "hc") },
+                          { content: d.is16 ? (0, _j)("span", { style: { fontSize: "11px", color: "#9ca3af" }, children: "\u2014" }) : renderCountCell(hpCounts, setHpCounts, htHpKey, 10, "#38a169", "hp") }
                         ], "ht_" + i, htAllDone ? { background: "rgba(56,161,105,0.04)" } : {}, i);
                       });
                       // ── Domenica: mostra medici holter domenica quando è sabato ──
@@ -26841,6 +26847,7 @@ body._num_edit_locked .m-count-input {
                           var _cMsun = _matchCardiologo(d.key, cardiologi) || {};
                           var dExtraSun = (vercelData.doctorExtra || {})[d.key] || {};
                           var sunBadges = [];
+                          if (d.is16) sunBadges.push((0, _j)("span", { title: "Turno Holter C16: solo HC, max 16", style: { fontSize: "9px", fontWeight: "700", color: "#8b5cf6", border: "1px solid rgba(139,92,246,0.4)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "SOLO HC 16" }, "c16"));
                           if (_cMsun.ssr === "SI" || (!_cMsun.ssr && dExtraSun.ssr)) sunBadges.push((0, _j)("span", { title: "Convenzione SSR", style: { fontSize: "9px", fontWeight: "600", color: "#6366f1", border: "1px solid rgba(99,102,241,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "SSR" }, "ssr"));
                           if (_cMsun.pediatrici === "SI" || (!_cMsun.pediatrici && dExtraSun.pediatrico)) sunBadges.push((0, _j)("span", { title: "Pazienti Pediatrici", style: { fontSize: "9px", fontWeight: "600", color: "#ec4899", border: "1px solid rgba(236,72,153,0.3)", borderRadius: "3px", padding: "0 3px", marginLeft: "2px" }, children: "PEDIATRICI" }, "ped"));
                           if (_cMsun.firma === "SI" || (!_cMsun.firma && dExtraSun.firmaDigitale)) sunBadges.push((0, _j)("span", { title: "Firma Digitale", style: { fontSize: "9px", color: "#374151", border: "1px solid rgba(55,65,81,0.3)", borderRadius: "3px", padding: "1px 3px", marginLeft: "2px", display: "inline-flex", alignItems: "center" }, children: "FIRMA" }, "firma"));
@@ -26848,13 +26855,13 @@ body._num_edit_locked .m-count-input {
                           var sunHpKey = "d6_ht_hp_" + d.key;
                           var enteredSunHc = hcCounts[sunHcKey];
                           var enteredSunHp = hpCounts[sunHpKey];
-                          var sunHcDone = enteredSunHc !== undefined && enteredSunHc !== "" && parseInt(enteredSunHc) >= 10;
-                          var sunHpDone = enteredSunHp !== undefined && enteredSunHp !== "" && parseInt(enteredSunHp) >= 10;
+                          var sunHcDone = enteredSunHc !== undefined && enteredSunHc !== "" && parseInt(enteredSunHc) >= (d.is16 ? 16 : 10);
+                          var sunHpDone = d.is16 ? true : (enteredSunHp !== undefined && enteredSunHp !== "" && parseInt(enteredSunHp) >= 10);
                           var sunAllDone = sunHcDone && sunHpDone;
                           htRows.push(flatRow([
                             { content: sunBadges.length > 0 ? _docTip((0, _js)("span", { style: { fontWeight: sunAllDone ? "700" : "500", fontSize: "11px", color: sunAllDone ? "#16a34a" : "#8b5cf6" }, children: [(0, _j)("div", { children: formatShortName(d.name) }), (0, _j)("div", { style: { display: "flex", flexWrap: "wrap", gap: "2px" }, children: sunBadges })] }), d.key, cardiologi) : _docTip((0, _j)("span", { style: { fontWeight: sunAllDone ? "700" : "500", fontSize: "11px", color: sunAllDone ? "#16a34a" : "#8b5cf6" }, children: formatShortName(d.name) }), d.key, cardiologi) },
-                            { content: renderCountCell(hcCounts, setHcCounts, sunHcKey, 10, "#e53e3e", "hc") },
-                            { content: renderCountCell(hpCounts, setHpCounts, sunHpKey, 10, "#38a169", "hp") }
+                            { content: renderCountCell(hcCounts, setHcCounts, sunHcKey, d.is16 ? 16 : 10, "#e53e3e", "hc") },
+                            { content: d.is16 ? (0, _j)("span", { style: { fontSize: "11px", color: "#9ca3af" }, children: "\u2014" }) : renderCountCell(hpCounts, setHpCounts, sunHpKey, 10, "#38a169", "hp") }
                           ], "sun_" + i, sunAllDone ? { background: "rgba(56,161,105,0.04)" } : { background: "rgba(139,92,246,0.03)" }, i));
                         });
                       }
